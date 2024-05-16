@@ -3,10 +3,10 @@ import json
 import time
 
 # Configuration
-API_KEY = "your-api-key-here"
-APP_NAME = "DND LLM"
-DM_MODEL_ID = "Qwen/Qwen1.5-7B-Chat"
-PLAYER_MODEL_IDS = ["Qwen/Qwen1.5-7B-Chat"] * 4
+API_KEY = "your_api_key"
+APP_NAME = "D&D LLM"
+DM_MODEL_ID = "togethercomputer/RedPajama-INCITE-7B-Instruct"
+PLAYER_MODEL_IDS = ["togethercomputer/RedPajama-INCITE-7B-Chat"] * 4
 API_ENDPOINT = 'https://api.together.xyz/inference'
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -17,20 +17,21 @@ TURN_LIMIT = 10
 # API call constants
 TOP_P = 1
 TOP_K = 40
-TEMPERATURE = 0.1
-MAX_TOKENS = 100
+TEMPERATURE = 0.8
+PLAYER_MAX_TOKENS = 150  # Updated for 100-150 words
+DM_MAX_TOKENS = 300      # Updated for 200-300 words
 REPETITION_PENALTY = 1
 
-def api_call(model_id, prompt, max_tokens=MAX_TOKENS, top_p=TOP_P, top_k=TOP_K, temperature=TEMPERATURE, repetition_penalty=REPETITION_PENALTY):
+def api_call(model_id, prompt, max_tokens):
     """Call the API to generate text based on the model ID and prompt."""
     data = {
         "model": model_id,
         "prompt": prompt,
-        "top_p": top_p,
-        "top_k": top_k,
-        "temperature": temperature,
+        "top_p": TOP_P,
+        "top_k": TOP_K,
+        "temperature": TEMPERATURE,
         "max_tokens": max_tokens,
-        "repetition_penalty": repetition_penalty
+        "repetition_penalty": REPETITION_PENALTY
     }
     try:
         response = requests.post(API_ENDPOINT, json=data, headers=HEADERS)
@@ -43,7 +44,6 @@ def api_call(model_id, prompt, max_tokens=MAX_TOKENS, top_p=TOP_P, top_k=TOP_K, 
 def generate_party():
     """Generate the party members with their backstories and items."""
     party = {
-        "Human Player": {"backstory": "A brave adventurer", "items": ["Longsword", "Leather armor", "Healing potion"], "model_id": None},
         "Eilif Stonefist": {"backstory": "A former soldier seeking redemption", "items": ["Longsword", "Leather armor", "Healing potion"], "model_id": PLAYER_MODEL_IDS[0]},
         "Elara Moonwhisper": {"backstory": "A young wizard eager to prove themselves", "items": ["Spell component pouch", "Quarterstaff", "Dagger"], "model_id": PLAYER_MODEL_IDS[1]},
         "Arin the Bold": {"backstory": "A cunning rogue with a mysterious past", "items": ["Short sword", "Leather armor", "Thieves' tools"], "model_id": PLAYER_MODEL_IDS[2]},
@@ -52,48 +52,51 @@ def generate_party():
     print("Party generated!")
     return party
 
-def print_ascii_art(title):
-    """Print ASCII art for the given title."""
-    art = {
-        "title": """
- ____  _                 _      __    __  _______ _     _             
-|  _ \| |               (_)     \ \  / / |__   __| |   (_)            
-| |_) | | ___   ___  ___ _  ___  \ \/ /     | |  | |__  _ _ __   __ _ 
-|  _ <| |/ _ \ / __|/ __| |/ __|  \  /      | |  | '_ \| | '_ \ / _` |
-| |_) | | (_) | (__| (__| | (__   /  \      | |  | | | | | | | | (_| |
-|____/|_|\___/ \___|\___|_|\___| /_/\_\     |_|  |_| |_|_| |_|\__, |
-                                                                 __/ |
-                                                                |___/ 
-        """,
-        "turn": """
-  _____                    _            
- |_   _|                  | |           
-   | |  _ __  _ __  _   _ | |_  ___ ___ 
-   | | | '_ \| '__|| | | || __|/ __/ _ \
-  _| |_| | | | |   | |_| || |_| (_|  __/
- |_____/_| |_|_|    \__,_| \__|\___\___|
-        """
-    }
-    print(art.get(title, ""))
+def print_ascii_art():
+    """Print ASCII art for the title."""
+    art = """
+ ____  _    _  ____     _        _ __  __ 
+|  _ \\| |  | |/ __ \\   | |      | |  \\/  |
+| | | | |  | | |  | |  | |      | | \\  / |
+| |_| | |__| | |__| |  | |____  | | |\\/| |
+|____/ \\____/ \\____/   |______| |_|_|  |_|
+    """
+    print(art)
 
 def start_new_adventure(party_members):
     """Start a new adventure and initialize the game state."""
-    game_state = {"turn": 0, "story_progression": [], "current_turn": 0}
-    print_ascii_art("title")
+    game_state = {"turn": 1, "story_progression": [], "current_turn": 0, "turn_participation": {name: False for name in party_members}}
+    print_ascii_art()
     print("New adventure started!\n")
+    
+    # Prompt the human player for their details
+    human_player_name = input("Enter your character's name: ")
+    human_player_backstory = input("Enter your character's backstory: ")
+    human_player_items = input("Enter your character's items (comma separated): ").split(", ")
+    
+    party_members["Human Player"] = {
+        "name": human_player_name,
+        "backstory": human_player_backstory,
+        "items": human_player_items,
+        "model_id": None
+    }
     
     # User inputs adventure info/lore
     adventure_info = input("Enter the info/lore for the adventure: ")
     game_state["story_progression"].append(adventure_info)
 
-    # DM starts the adventure
+    # DM starts the adventure and introduces players
     prompt = (
         f"Adventure Info: {adventure_info}\n"
         "DM: Welcome to our D&D adventure! You are all brave adventurers seeking fortune and glory in the land of Eldoria. "
         "What happens next?\n"
-        "Your response should be a brief introduction of the adventure setting."
+        "Your response should be a detailed introduction of the adventure setting. Please include the following:\n"
+        "- The current environment and atmosphere.\n"
+        "- Any notable landmarks or features.\n"
+        "- The immediate goal or situation for the players.\n"
+        "Your response should be between 200 and 300 words."
     )
-    dm_response = api_call(DM_MODEL_ID, prompt)
+    dm_response = api_call(DM_MODEL_ID, prompt, DM_MAX_TOKENS)
     
     dm_text = dm_response.get('output', {}).get('choices', [{}])[0].get('text', "Error: DM response does not contain 'text' key.")
     print(f"DM: {dm_text}\n")
@@ -101,58 +104,80 @@ def start_new_adventure(party_members):
 
     # DM introduces each player
     for player_name, player_info in party_members.items():
-        if player_name != "Human Player":
-            player_intro = (
-                f"DM: Introducing {player_name}, {player_info['backstory']}. "
-                f"They are equipped with {', '.join(player_info['items'])}.\n"
-                "Your response should briefly describe the player's appearance, skills, and notable items."
-            )
-            print(player_intro)
-            game_state["story_progression"].append(player_intro)
+        player_intro = (
+            f"DM: Introducing {player_info['name'] if player_name == 'Human Player' else player_name}, {player_info['backstory']}. "
+            f"They are equipped with {', '.join(player_info['items'])}.\n"
+            "Your response should include the following:\n"
+            "- A brief description of the player's appearance.\n"
+            "- Their notable skills and abilities.\n"
+            "- Any special items or equipment they carry.\n"
+            "Your response should be between 100 and 150 words."
+        )
+        if player_name == "Human Player":
+            player_text = f"{player_info['name']} is a brave adventurer. {player_info['backstory']}. They are equipped with {', '.join(player_info['items'])}."
+        else:
+            player_response = api_call(player_info["model_id"], player_intro, PLAYER_MAX_TOKENS)
+            player_text = player_response.get('output', {}).get('choices', [{}])[0].get('text', f"Error: {player_name} response does not contain 'text' key.")
+        
+        print(f"DM: {player_text}\n")
+        game_state["story_progression"].append(player_text)
     
     return game_state
 
 def player_turn(player_name, player_info, game_state):
     """Handle a player's turn."""
     if player_name == "Human Player":
-        prompt = f"{game_state['story_progression'][-1]}\n{player_name}: "
+        prompt = f"{game_state['story_progression'][-1]}\n{player_info['name']}: Describe your character's actions in response to the current situation. Your response should be between 100 and 150 words."
         user_input = input(prompt)
-        print(f"{player_name}: {user_input}\n")
+        print(f"{player_info['name']}: {user_input}\n")
         game_state["story_progression"].append(user_input)
     else:
         prompt = (
             f"{game_state['story_progression'][-1]}\n{player_name}: "
-            "Describe your character's actions in response to the current situation."
+            "Describe your character's actions in response to the current situation. "
+            "Your response should be between 100 and 150 words."
         )
-        player_response = api_call(player_info["model_id"], prompt)
+        player_response = api_call(player_info["model_id"], prompt, PLAYER_MAX_TOKENS)
         
         player_text = player_response.get('output', {}).get('choices', [{}])[0].get('text', f"Error: {player_name} response does not contain 'text' key.")
         print(f"{player_name}: {player_text}\n")
         game_state["story_progression"].append(player_text)
+    
+    game_state["turn_participation"][player_name] = True
 
 def dm_turn(game_state):
     """Handle the DM's turn."""
     prompt = (
         f"{game_state['story_progression'][-1]}\nDM: "
-        "Summarize what happened in the previous turn and introduce new events or challenges for the players."
+        "Summarize what happened in the previous turn and introduce new events or challenges for the players. "
+        "Your response should be between 200 and 300 words."
     )
-    dm_response = api_call(DM_MODEL_ID, prompt)
+    dm_response = api_call(DM_MODEL_ID, prompt, DM_MAX_TOKENS)
     
     dm_text = dm_response.get('output', {}).get('choices', [{}])[0].get('text', "Error: DM response does not contain 'text' key.")
     print(f"DM: {dm_text}\n")
     game_state["story_progression"].append(dm_text)
+    game_state["turn_participation"] = {name: False for name in game_state["turn_participation"]}
+
+def display_turn_info(game_state, party_members):
+    """Display the current turn information and participation status."""
+    print(f"\n--- Turn {game_state['turn']} ---")
+    for player_name in party_members:
+        status = "✓" if game_state["turn_participation"][player_name] else "✗"
+        print(f"{player_name}: {status}")
+    print()
 
 def play_game(party_members):
     """Run the game loop, handling player and DM turns."""
     game_state = start_new_adventure(party_members)
 
-    while game_state["turn"] < TURN_LIMIT:
-        print_ascii_art("turn")
-        print(f"\n--- Turn {game_state['turn'] + 1} ---\n")
+    while game_state["turn"] <= TURN_LIMIT:
+        display_turn_info(game_state, party_members)
 
         # Players' turns
         for player_name, player_info in party_members.items():
-            player_turn(player_name, player_info, game_state)
+            if not game_state["turn_participation"][player_name]:
+                player_turn(player_name, player_info, game_state)
 
         # DM's turn
         dm_turn(game_state)
@@ -168,8 +193,8 @@ def main():
     """Main menu for the D&D Simulation."""
     party_members = {}
     while True:
-        print_ascii_art("title")
-        print("Welcome to D&D Simulation!")
+        print_ascii_art()
+        print("Welcome to D&D LLM!")
         print("1. Generate Party")
         print("2. Start New Adventure")
         print("3. Quit")
@@ -187,5 +212,5 @@ def main():
         else:
             print("Invalid choice. Try again!")
 
-if __name__ == "__main__":
+if __name__ == "__ "__main__":
     main()
