@@ -3,10 +3,10 @@ import json
 import time
 
 # Configuration
-API_KEY = "your_api_key"
+API_KEY = "your-api-key"
 APP_NAME = "D&D LLM"
-DM_MODEL_ID = "togethercomputer/RedPajama-INCITE-7B-Instruct"
-PLAYER_MODEL_IDS = ["togethercomputer/RedPajama-INCITE-7B-Chat"] * 4
+DM_MODEL_ID = "NousResearch/Nous-Hermes-2-Mistral-7B-DPO"
+PLAYER_MODEL_IDS = ["NousResearch/Nous-Hermes-2-Mistral-7B-DPO"] * 4
 API_ENDPOINT = 'https://api.together.xyz/inference'
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -65,7 +65,8 @@ def print_ascii_art():
 
 def start_new_adventure(party_members):
     """Start a new adventure and initialize the game state."""
-    game_state = {"turn": 1, "story_progression": [], "current_turn": 0, "turn_participation": {name: False for name in party_members}}
+    game_state = {"turn": 1, "story_progression": [], "current_turn": 0}
+    
     print_ascii_art()
     print("New adventure started!\n")
     
@@ -80,6 +81,9 @@ def start_new_adventure(party_members):
         "items": human_player_items,
         "model_id": None
     }
+    
+    # Initialize turn participation
+    game_state["turn_participation"] = {name: False for name in party_members}
     
     # User inputs adventure info/lore
     adventure_info = input("Enter the info/lore for the adventure: ")
@@ -212,5 +216,5 @@ def main():
         else:
             print("Invalid choice. Try again!")
 
-if __name__ == "__ "__main__":
+if __name__ == "__main__":
     main()
