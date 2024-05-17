@@ -3,11 +3,14 @@ import json
 import time
 
 # Configuration
-API_KEY = "your-api-key"
+API_KEY = "your-api-key"  # Replace 'your-api-key' with your actual Together.ai API key
 APP_NAME = "D&D LLM"
-DM_MODEL_ID = "NousResearch/Nous-Hermes-2-Mistral-7B-DPO"
-PLAYER_MODEL_IDS = ["NousResearch/Nous-Hermes-2-Mistral-7B-DPO"] * 4
-API_ENDPOINT = 'https://api.together.xyz/inference'
+DM_MODEL_ID_TOGETHER = "NousResearch/Nous-Hermes-2-Mistral-7B-DPO"
+PLAYER_MODEL_IDS_TOGETHER = ["NousResearch/Nous-Hermes-2-Mistral-7B-DPO"] * 4
+DM_MODEL_ID_OLLAMA = "phi3"
+PLAYER_MODEL_IDS_OLLAMA = ["phi3"] * 4
+TOGETHER_API_ENDPOINT = 'https://api.together.xyz/inference'
+OLLAMA_API_ENDPOINT = 'http://localhost:11434/api/generate'
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "User-Agent": APP_NAME
@@ -22,8 +25,10 @@ PLAYER_MAX_TOKENS = 150  # Updated for 100-150 words
 DM_MAX_TOKENS = 300      # Updated for 200-300 words
 REPETITION_PENALTY = 1
 
+USE_OLLAMA = True  # Set this to False to use Together API
+
 def api_call(model_id, prompt, max_tokens):
-    """Call the API to generate text based on the model ID and prompt."""
+    """Call the appropriate API to generate text based on the model ID and prompt."""
     data = {
         "model": model_id,
         "prompt": prompt,
@@ -34,20 +39,39 @@ def api_call(model_id, prompt, max_tokens):
         "repetition_penalty": REPETITION_PENALTY
     }
     try:
-        response = requests.post(API_ENDPOINT, json=data, headers=HEADERS)
-        response.raise_for_status()
-        return response.json()
+        if USE_OLLAMA:
+            response = requests.post(OLLAMA_API_ENDPOINT, json=data, stream=True)
+            response.raise_for_status()
+            
+            # Handle streaming response
+            response_text = ""
+            for line in response.iter_lines():
+                if line:
+                    json_line = json.loads(line.decode('utf-8'))
+                    response_text += json_line.get('response', '')
+
+            # Debugging: Print the concatenated response
+            print(f"Concatenated Ollama API response: {response_text}")
+            return {"output": {"choices": [{"text": response_text}]}}
+        else:
+            response = requests.post(TOGETHER_API_ENDPOINT, json=data, headers=HEADERS)
+            response.raise_for_status()
+            return response.json()
     except requests.RequestException as e:
         print(f"API call error: {e}")
         return {}
+    except json.JSONDecodeError as e:
+        print(f"JSON decode error: {e}")
+        return {"error": "JSON decode error"}
 
 def generate_party():
     """Generate the party members with their backstories and items."""
+    player_model_ids = PLAYER_MODEL_IDS_OLLAMA if USE_OLLAMA else PLAYER_MODEL_IDS_TOGETHER
     party = {
-        "Eilif Stonefist": {"backstory": "A former soldier seeking redemption", "items": ["Longsword", "Leather armor", "Healing potion"], "model_id": PLAYER_MODEL_IDS[0]},
-        "Elara Moonwhisper": {"backstory": "A young wizard eager to prove themselves", "items": ["Spell component pouch", "Quarterstaff", "Dagger"], "model_id": PLAYER_MODEL_IDS[1]},
-        "Arin the Bold": {"backstory": "A cunning rogue with a mysterious past", "items": ["Short sword", "Leather armor", "Thieves' tools"], "model_id": PLAYER_MODEL_IDS[2]},
-        "Morgran Ironfist": {"backstory": "A devout cleric on a mission from their god", "items": ["Warhammer", "Chain mail", "Shield"], "model_id": PLAYER_MODEL_IDS[3]}
+        "Eilif Stonefist": {"backstory": "A former soldier seeking redemption", "items": ["Longsword", "Leather armor", "Healing potion"], "model_id": player_model_ids[0]},
+        "Elara Moonwhisper": {"backstory": "A young wizard eager to prove themselves", "items": ["Spell component pouch", "Quarterstaff", "Dagger"], "model_id": player_model_ids[1]},
+        "Arin the Bold": {"backstory": "A cunning rogue with a mysterious past", "items": ["Short sword", "Leather armor", "Thieves' tools"], "model_id": player_model_ids[2]},
+        "Morgran Ironfist": {"backstory": "A devout cleric on a mission from their god", "items": ["Warhammer", "Chain mail", "Shield"], "model_id": player_model_ids[3]}
     }
     print("Party generated!")
     return party
@@ -90,6 +114,7 @@ def start_new_adventure(party_members):
     game_state["story_progression"].append(adventure_info)
 
     # DM starts the adventure and introduces players
+    dm_model_id = DM_MODEL_ID_OLLAMA if USE_OLLAMA else DM_MODEL_ID_TOGETHER
     prompt = (
         f"Adventure Info: {adventure_info}\n"
         "DM: Welcome to our D&D adventure! You are all brave adventurers seeking fortune and glory in the land of Eldoria. "
@@ -100,7 +125,7 @@ def start_new_adventure(party_members):
         "- The immediate goal or situation for the players.\n"
         "Your response should be between 200 and 300 words."
     )
-    dm_response = api_call(DM_MODEL_ID, prompt, DM_MAX_TOKENS)
+    dm_response = api_call(dm_model_id, prompt, DM_MAX_TOKENS)
     
     dm_text = dm_response.get('output', {}).get('choices', [{}])[0].get('text', "Error: DM response does not contain 'text' key.")
     print(f"DM: {dm_text}\n")
@@ -151,12 +176,13 @@ def player_turn(player_name, player_info, game_state):
 
 def dm_turn(game_state):
     """Handle the DM's turn."""
+    dm_model_id = DM_MODEL_ID_OLLAMA if USE_OLLAMA else DM_MODEL_ID_TOGETHER
     prompt = (
         f"{game_state['story_progression'][-1]}\nDM: "
         "Summarize what happened in the previous turn and introduce new events or challenges for the players. "
         "Your response should be between 200 and 300 words."
     )
-    dm_response = api_call(DM_MODEL_ID, prompt, DM_MAX_TOKENS)
+    dm_response = api_call(dm_model_id, prompt, DM_MAX_TOKENS)
     
     dm_text = dm_response.get('output', {}).get('choices', [{}])[0].get('text', "Error: DM response does not contain 'text' key.")
     print(f"DM: {dm_text}\n")

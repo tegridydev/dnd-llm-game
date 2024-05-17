@@ -1,6 +1,7 @@
+
 # dnd-llm-game
 
-MVP of an idea using multiple LLM models to simulate and play D&D.
+MVP of an idea using multiple LLM models to simulate and play D&D (Local LLM via ollama support + together.ai API support).
 
 ## Overview
 
@@ -12,6 +13,7 @@ This project is a proof of concept (MVP) that demonstrates how to use multiple l
 - **Human Player Input**: Prompts the human player to enter their character details.
 - **Adventure Setup**: The DM starts the adventure and introduces all characters.
 - **Turn-Based Gameplay**: Each character takes turns describing their actions, followed by the DM summarizing the events and introducing new challenges.
+- **Local LLM Support**: Option to use local LLMs via the Ollama API for LLM-controlled characters and the DM.
 
 ## Getting Started
 
@@ -38,6 +40,8 @@ This project is a proof of concept (MVP) that demonstrates how to use multiple l
     export TOGETHER_API_KEY='your_api_key'
     ```
 
+4. (Optional) Set up the Ollama API for local LLM support. Ensure the Ollama API is running and accessible at the specified endpoint (default: `http://localhost:11434/api/generate`).
+
 ### Running the Script
 
 1. Run the script:
@@ -46,6 +50,15 @@ This project is a proof of concept (MVP) that demonstrates how to use multiple l
     ```
 
 2. Follow the on-screen prompts to generate a party and start a new adventure.
+
+### Using Local LLM (Ollama)
+
+To use the local LLM via the Ollama API, set the `USE_OLLAMA` flag to `True` in the `dnd.py` script:
+```python
+USE_OLLAMA = True  # Set this to False to use Together API
+```
+
+Ensure the Ollama API is running locally and accessible. The default endpoint is `http://localhost:11434/api/generate`.
 
 ## How It Works
 
@@ -69,7 +82,7 @@ This project is open source and can be expanded in numerous ways:
 
 ## Contributing
 
-Contributions are welcome! Please fork the repository and build some cool stuff
+Contributions are welcome! Please fork the repository and build some cool stuff.
 
 ## License
 
@@ -77,5 +90,5 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Acknowledgements
 
-- This project uses the Together API for LLM interactions.
+- This project uses the Together API and the Ollama API for LLM interactions.
 - Inspired by the creative world of Dungeons & Dragons.
