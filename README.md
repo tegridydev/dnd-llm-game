@@ -1,94 +1,78 @@
+# TD-LLM-DND
 
-# dnd-llm-game
+TD-LLM-DND is a Streamlit-based web application that creates a Dungeons & Dragons style adventure using locally hosted llm from ollama.
 
-MVP of an idea using multiple LLM models to simulate and play D&D (Local LLM via ollama support + together.ai API support).
-
-## Overview
-
-This project is a proof of concept (MVP) that demonstrates how to use multiple language models (LLMs) to simulate and play a Dungeons & Dragons (D&D) game. The script involves a Dungeon Master (DM) and several player characters, some controlled by LLMs and one controlled by a human player.
+Players can generate characters, start new adventures, and progress through turns with an automated Dungeon Master, AI powered party members and player interactions (TO:DO).
 
 ## Features
 
-- **Generate Party**: Generates a party of LLM-controlled characters.
-- **Human Player Input**: Prompts the human player to enter their character details.
-- **Adventure Setup**: The DM starts the adventure and introduces all characters.
-- **Turn-Based Gameplay**: Each character takes turns describing their actions, followed by the DM summarizing the events and introducing new challenges.
-- **Local LLM Support**: Option to use local LLMs via the Ollama API for LLM-controlled characters and the DM.
+- **Generate D&D Characters**: Create unique characters with name, race, class, backstory, and items
+- **Start New Adventure**: Begin a new adventure with the generated characters
+- **Turn-Based Gameplay**: Progress through the adventure with player and Dungeon Master turns (TO:DO - add player input)
+- **Manage Models**: Select/download and manage language models for the Dungeon Master and AI players
 
-## Getting Started
+## Requirements
 
-### Prerequisites
+- Python 3.8+
+- Streamlit
+- Requests
+- LangChain
+- HuggingFace Transformers
+- dotenv
 
-- Python 3
-- `requests` library (install via `pip install requests`)
+## Installation
 
-### Setup
-
-1. Clone the repository:
-    ```sh
-    git clone https://github.com/tegridydev/dnd-llm-game.git
-    cd dnd-llm-game
+1. **Clone the repository**:
+    ```
+    git clone https://github.com/your-username/td-llm-dnd-adventure.git
+    cd td-llm-dnd-adventure
     ```
 
-2. Install the required Python packages:
-    ```sh
-    pip install requests
+2. **Create and activate a virtual environment**:
+    ```
+    python -m venv venv
+    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
     ```
 
-3. Set your Together API key in the script or as an environment variable:
-    ```sh
-    export TOGETHER_API_KEY='your_api_key'
+3. **Install the dependencies**:
+    ```
+    pip install -r requirements.txt
     ```
 
-4. (Optional) Set up the Ollama API for local LLM support. Ensure the Ollama API is running and accessible at the specified endpoint (default: `http://localhost:11434/api/generate`).
-
-### Running the Script
-
-1. Run the script:
-    ```sh
-    python dnd.py
+4. **Set up environment variables**:
+    Create a `.env` file in the root directory with the following content:
+    ```plaintext
+    OLLAMA_API_ENDPOINT=http://localhost:11434/api/generate
+    PDF_FOLDER=pdf
+    CHROMA_DB_DIR=./chroma_db
+    TURN_LIMIT=10
     ```
 
-2. Follow the on-screen prompts to generate a party and start a new adventure.
+## Usage
 
-### Using Local LLM (Ollama)
+1. **Start Ollama**:
+    ```
+    ollama serve
+    ```
 
-To use the local LLM via the Ollama API, set the `USE_OLLAMA` flag to `True` in the `dnd.py` script:
-```python
-USE_OLLAMA = True  # Set this to False to use Together API
-```
+2. **Run the Streamlit app**:
+    ```
+    streamlit run app.py
+    ```
 
-Ensure the Ollama API is running locally and accessible. The default endpoint is `http://localhost:11434/api/generate`.
+3. **Access the app**:
+    Open your browser and go to `http://localhost:8501`.
 
-## How It Works
+## How to Play
 
-1. **Generate Party**: The script generates a party of LLM-controlled characters.
-2. **Human Player Input**: The human player is prompted to enter their character's name, backstory, and items.
-3. **Adventure Setup**: The DM introduces the adventure setting and all characters.
-4. **Turn-Based Gameplay**: Each character takes turns to describe their actions, and the DM summarizes the events and introduces new challenges.
+1. Generate a new party.
+2. Start a new adventure.
+3. Play the next turn.
 
-## Expansion Ideas
-
-This project is open source and can be expanded in numerous ways:
-
-1. **Character Development**: Add more detailed character creation options, including classes, races, and abilities.
-2. **Inventory Management**: Implement inventory management for both LLM-controlled and human-controlled characters.
-3. **Battle System**: Create a more complex battle system with dice rolls, hit points, and special abilities.
-4. **Story Progression**: Develop a more sophisticated story progression system with branching narratives based on player choices.
-5. **Multiplayer**: Allow multiple human players to join the game and interact with LLM-controlled characters.
-6. **Graphics and UI**: Enhance the game with graphical elements and a user-friendly interface.
-7. **Integration with D&D Rulesets**: Integrate the game with official D&D rulesets and modules.
-8. **Save and Load**: Implement save and load functionality to allow players to continue their adventures at a later time.
+May your dice roll high!
 
 ## Contributing
 
-Contributions are welcome! Please fork the repository and build some cool stuff.
+Contributions are welcome! Please fork the repository and submit a pull request!
 
-## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Acknowledgements
-
-- This project uses the Together API and the Ollama API for LLM interactions.
-- Inspired by the creative world of Dungeons & Dragons.
