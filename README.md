@@ -24,8 +24,8 @@ Players can generate characters, start new adventures, and progress through turn
 
 1. **Clone the repository**:
     ```
-    git clone https://github.com/your-username/td-llm-dnd-adventure.git
-    cd td-llm-dnd-adventure
+    git clone https://github.com/tegridydev/dnd-llm-game.git
+    cd td-llm-dnd
     ```
 
 2. **Create and activate a virtual environment**:
