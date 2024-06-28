@@ -4,6 +4,8 @@ TD-LLM-DND is a Streamlit-based web application that creates a Dungeons & Dragon
 
 Players can generate characters, start new adventures, and progress through turns with an automated Dungeon Master, AI powered party members and player interactions (TO:DO).
 
+![screen](/current/td-llm-dnd.png)
+
 ## Features
 
 - **Generate D&D Characters**: Create unique characters with name, race, class, backstory, and items
