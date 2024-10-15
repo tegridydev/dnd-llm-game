@@ -71,7 +71,8 @@ def api_call(model: str, prompt: str, max_tokens: int) -> str:
             return "Error: No valid JSON objects found in response."
 
 
-        combined_response = " ".join([obj.get("response", "") for obj in json_objects])
+        combined_response = "".join([obj.get("response", "") for obj in json_objects])
+        
         return combined_response
 
     except requests.RequestException as e:
@@ -141,6 +142,7 @@ def manage_models():
     player_model = st.selectbox("AI Player Model", models,
                                 index=models.index(st.session_state.get('player_model', models[0])))
     embedding_model = st.selectbox("RAG Embedding Model", ["sentence-transformers/all-mpnet-base-v2",
+                                                           "sentence-transformers/all-MiniLM-L12-v2",
                                                            "sentence-transformers/all-MiniLM-L6-v2"])
 
     if st.button("Save Model Selections"):
