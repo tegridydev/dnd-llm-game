@@ -4,3 +4,6 @@ langchain
 huggingface-hub
 sentence-transformers
 python-dotenv
+langchain_community
+langchain_huggingface
+chromadb
