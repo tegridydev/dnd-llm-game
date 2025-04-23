@@ -1,0 +1,20 @@
+ollama
+httpx
+faiss-cpu
+numpy
+PyMuPDF
+python-dotenv
+streamlit
+pydantic
+pydantic-settings
+sentence-transformers
+transformers
+hnswlib
+tenacity
+
+ # Dev
+black
+isort
+flake8
+mypy
+pre-commit
