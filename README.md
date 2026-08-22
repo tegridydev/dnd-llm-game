@@ -1,102 +1,110 @@
-# DND-LLM-GAME
+# DNDLLM26
 
-Local-first D&D web app powered by Ollama. The app runs a local Dungeon Master model, a smaller utility model for rules/state/action extraction, streamed responses, dice prompts, reusable heroes, campaign history, and optional PDF lore/RAG.
+A local AI Dungeon Master for solo D&D-style adventures. It runs on your computer, streams scenes from Ollama, owns the dice and combat rules, and remembers your campaigns between sessions.
 
-## Features
+![DNDLLM26 campaign screen](dnd-llm-game-screen.png)
 
-- Local DM narration through Ollama
-- Separate utility model for dice checks, scene state, and player choices
-- FastAPI backend with streamed Server-Sent Events
-- Vite React frontend launched by Bun
-- SQLite app database through SQLModel
-- LanceDB local vector store for uploaded PDF lore
-- Hero manager with reusable player characters
-- Campaign intro generation from the campaign brief and selected heroes
-- Click-to-roll dice checks when the rules referee requires uncertainty
+## What you can do
 
-![dnd-llm-game-screen](dnd-llm-game-screen.png)
+- Build reusable heroes across six classes and four ancestries
+- Play solo or bring along DM-controlled companions
+- Explore persistent stories with quests, NPCs, world facts, rests, and progression
+- Fight turn-based battles with initiative, lanes, HP, conditions, class actions, and death saves
+- Add local PDF lore for the DM to reference
+- Pick separate Ollama models for narration, rules, and lore search
+- Stop, restart, and safely retry interrupted actions without duplicating turns or dice rolls
 
-## Requirements
+Everything stays local: **React + FastAPI + SQLite + Ollama + LanceDB**. There are no accounts, cloud services, or extra queue/database servers.
 
+## You will need
+
+- Python 3.11–3.14
+- [uv](https://docs.astral.sh/uv/)
 - [Bun](https://bun.sh/)
-- Python 3.11+
 - [Ollama](https://ollama.com/) running locally
 
-The launcher installs/syncs Python packages with `uv` and frontend packages with Bun. If `uv` is missing, it attempts to install it with Python.
-
-## Quick Start
+The default models are small enough to get started easily:
 
 ```bash
-git clone https://github.com/tegridydev/dnd-llm-game.git
-cd dndllm26
-bun run dev
-```
-
-The launcher will:
-
-- create/sync `.venv`
-- install frontend packages
-- start FastAPI on `http://127.0.0.1:8765`
-- start Vite on `http://localhost:5173`
-- open the browser automatically
-
-## Ollama Models
-
-Start Ollama first:
-
-```bash
-ollama serve
-```
-
-Pull the default models:
-
-```bash
+ollama pull llama3.2:3b
 ollama pull llama3.2:1b
-ollama pull granite4:350m
 ollama pull nomic-embed-text
 ```
 
-Copy `.env.example` to `.env` if you want custom models or ports:
+You can swap these for compatible installed models later from the Settings cog.
+
+## Start playing
+
+From the project folder:
+
+```bash
+bun run dev
+```
+
+The launcher installs the locked Python and frontend dependencies, starts both local services, waits until they are ready, and opens the app at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+That is all you need for the normal setup. If you want to change ports, model defaults, storage paths, or PDF limits, copy `.env.example` to `.env` first and edit it:
 
 ```bash
 cp .env.example .env
 ```
 
-Model settings:
+On Windows PowerShell, use `Copy-Item .env.example .env`.
 
-```env
-OLLAMA_CHAT_MODEL=llama3.2:1b
-OLLAMA_UTILITY_MODEL=granite4:350m
-OLLAMA_EMBED_MODEL=nomic-embed-text
-```
-
-`OLLAMA_CHAT_MODEL` is the main DM narrator. `OLLAMA_UTILITY_MODEL` should be a smaller/faster model used for dice decisions, world-state extraction, and dynamic player choices. If it is blank, the app falls back to the main chat model.
-
-## Using Lore PDFs
-
-Upload PDFs from the Lore panel, or place PDFs in `data/uploads`. The app discovers queued PDFs and indexes them into LanceDB using the configured embedding model. Indexed lore is retrieved into DM prompts and rules/state context.
-
-Runtime data is stored in `data/` and is intentionally ignored by git.
-
-## Scripts
+## Handy commands
 
 ```bash
-bun run dev      # sync deps, start backend + frontend, open browser
-bun run start    # same as dev
-bun run build    # type-check and build the frontend
+bun run dev             # Run the development app
+bun run start           # Build and run a production preview
+bun run build           # Type-check and build the frontend
+bun run check           # Run every backend/frontend check
+bun run test:backend    # Backend tests only
+bun run test:frontend   # Frontend tests only
 ```
 
-## Project Layout
+The local API docs are available at [http://127.0.0.1:8765/api/docs](http://127.0.0.1:8765/api/docs) while the app is running.
 
-- `backend/dndllm26/api`: FastAPI routes
-- `backend/dndllm26/core`: settings
-- `backend/dndllm26/db`: SQLite models and sessions
-- `backend/dndllm26/game`: campaign, dice, hero, and world-state orchestration
-- `backend/dndllm26/llm`: Ollama client
-- `backend/dndllm26/rag`: PDF extraction, chunking, LanceDB search
-- `frontend/src`: React app and styles
-- `scripts/start-dev.ts`: one-command local launcher
+## Your data
 
-## Notes
+Campaigns and generated runtime files live under `data/`:
 
-DM responses are capped for playability (Feel free to change and experiment!): max 1000 characters and max 200 words. The utility model generates the player-choice buttons after each DM response, so the main DM can focus on narration.
+```text
+data/
+├── dndllm26.db
+├── uploads/
+└── lancedb/
+```
+
+This folder and `.env` are ignored by version control. Back up `data/` if you want to keep your adventures when moving to another computer.
+
+The app only binds to loopback addresses and has no remote login system. Do not expose its ports through a public tunnel, reverse proxy, router port-forward, or public container binding.
+
+Existing databases must match the current schema. An incompatible database is left untouched so you can archive it yourself before starting fresh. To inspect the current database:
+
+```bash
+uv run dndllm26-integrity
+```
+
+## Lore PDFs
+
+Upload PDFs from the Lore panel. They are stored locally, split into searchable passages, and indexed with the selected embedding model. Scanned image-only PDFs need OCR first.
+
+If lore stays queued, check that Ollama is running and that the configured embedding model is installed. Restarting the app safely resumes queued or interrupted indexing work.
+
+## Quick troubleshooting
+
+**The runtime says Ollama is unavailable**  
+Start Ollama, run `ollama list`, and make sure the selected models are installed. You can refresh the runtime status from the app.
+
+**A configured model is missing**  
+Pull it with `ollama pull <model>` or choose another compatible installed model in Settings.
+
+**The database schema is incompatible**  
+The app will not overwrite it. Move the old `data/dndllm26.db` somewhere safe, then restart to create a fresh database.
+
+**A PDF has no searchable text**  
+It is probably a scan. Run OCR on the file before uploading it.
+
+## Licence
+
+See [LICENSE](LICENSE) for the project licence and usage terms.

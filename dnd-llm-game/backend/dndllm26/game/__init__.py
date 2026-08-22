@@ -1,2 +1,0 @@
-"""Game orchestration package."""
-

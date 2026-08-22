@@ -1,0 +1,17 @@
+{
+  "name": "dndllm26",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun scripts/start-dev.ts",
+    "start": "bun scripts/start-dev.ts --production",
+    "build": "bun run --cwd frontend build",
+    "test:backend": "uv run pytest -q",
+    "test:frontend": "bun run --cwd frontend test",
+    "test:scripts": "bun test scripts",
+    "check:bundle": "bun scripts/check-bundle.ts",
+    "format": "uv run ruff format backend",
+    "check": "uv run ruff format --check backend && uv run ruff check backend && uv run pytest -q --cov=backend/dndllm26 --cov-fail-under=67 && bun test scripts && bun run --cwd frontend check && bun run check:bundle"
+  }
+}
