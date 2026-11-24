@@ -36,6 +36,15 @@ def safe_display_name(value: str | None) -> str:
     return stem[:251] + ".pdf"
 
 
+def managed_pdf_path(settings: Settings, storage_name: str) -> Path | None:
+    if not storage_name.lower().endswith(".pdf") or storage_name in {".pdf", "..pdf"}:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", storage_name):
+        return None
+    path = settings.resolved_upload_dir / storage_name
+    return None if path.is_symlink() else path
+
+
 async def store_pdf_upload(upload: UploadFile, settings: Settings) -> StoredUpload:
     display_name = safe_display_name(upload.filename)
     storage_name = f"{uuid4().hex}.pdf"
@@ -67,7 +76,7 @@ async def store_pdf_upload(upload: UploadFile, settings: Settings) -> StoredUplo
         if b"%PDF-" not in bytes(header):
             raise ValidationError("Uploaded file does not contain a valid PDF header.")
         os.replace(temporary, destination)
-    except Exception:
+    except BaseException:
         temporary.unlink(missing_ok=True)
         destination.unlink(missing_ok=True)
         raise

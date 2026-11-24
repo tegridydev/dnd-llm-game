@@ -9,10 +9,10 @@ from typing import Sequence
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from dndllm26.game.lifecycle import playable_campaign
 from dndllm26.core.errors import ConflictError, NotFoundError, ValidationError
 from dndllm26.db.models import (
     ActionRequest,
-    Campaign,
     Character,
     Combatant,
     DiceRoll,
@@ -168,9 +168,12 @@ def assess_combat(
 
     duel = bool(_DUEL_RE.search(action))
     combined_text = f"{action}\n{narration}\n{context_text}"
-    target = _mentioned_npc(combined_text, known_npcs)
-    role_target, plural_target = _explicit_target(action or narration)
-    target = target or role_target
+    trigger_text = action if committed else narration
+    role_target, plural_target = _explicit_target(trigger_text)
+    # Resolve an explicit target before considering names from the surrounding scene.
+    target = _mentioned_npc(trigger_text, known_npcs) or role_target
+    if not target:
+        target = _mentioned_npc(combined_text, known_npcs)
     cleaned_model_names = tuple(
         name for raw in model_names if (name := normalise_npc_identity(raw))
     )
@@ -356,8 +359,7 @@ def start_encounter(
     display_names: Sequence[str] = (),
     opening_events: list[str] | None = None,
 ) -> Encounter:
-    if not session.get(Campaign, campaign_id):
-        raise NotFoundError("Campaign not found.")
+    playable_campaign(session, campaign_id)
     active = active_encounter(session, campaign_id)
     if active:
         raise ConflictError("An encounter is already active.")
@@ -540,6 +542,7 @@ def prepare_combat_action(
     target_id: int | None,
     destination_lane: str | None,
 ) -> tuple[PendingRoll, bool]:
+    playable_campaign(session, campaign_id)
     canonical_payload = json.dumps(
         {
             "action_id": action_id,

@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from dndllm26.core.settings import Settings
 from dndllm26.db.models import CampaignLore, LoreDocument, now_utc
 from dndllm26.rag.store import RagStore
+from dndllm26.rag.uploads import managed_pdf_path
 
 
 async def finalize_lore_deletion(
@@ -27,8 +28,8 @@ async def finalize_lore_deletion(
         storage_name = document.storage_name
     try:
         await rag.delete_document(document_id)
-        if storage_name:
-            path = settings.resolved_upload_dir / storage_name
+        path = managed_pdf_path(settings, storage_name)
+        if path is not None:
             await asyncio.to_thread(path.unlink, missing_ok=True)
         with Session(engine) as session:
             document = session.get(LoreDocument, document_id)

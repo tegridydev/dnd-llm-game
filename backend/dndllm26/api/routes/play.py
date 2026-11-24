@@ -31,7 +31,7 @@ from dndllm26.game.play import (
     prepare_action,
     prepare_roll_resolution,
 )
-from dndllm26.game.narration import ensure_second_person
+from dndllm26.game.narration import bounded_narration, collect_dm_narration, ensure_second_person
 from dndllm26.game.prompts import (
     build_dm_prompt,
     build_combat_transition_retry_messages,
@@ -43,7 +43,7 @@ from dndllm26.game.prompts import (
     safe_second_person_narration,
 )
 from dndllm26.game.rules import decide_roll
-from dndllm26.game.text import MAX_DM_CHARS, trim_dm_text
+from dndllm26.game.text import trim_dm_text
 from dndllm26.game.world import analyse_world_update
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ async def stream_action(
         try:
             yield emitter.emit("phase", {"status": "checking_action"})
             decision = await decide_roll(
-                resources.ollama,
+                resources.models,
                 preparation.context,
                 preparation.action_text,
             )
@@ -174,26 +174,15 @@ async def stream_action(
                     hero_name=hero_name,
                     opponent_names=combat.display_names,
                 )
-                retry_parts: list[str] = []
-                retry_count = 0
                 try:
-                    async for retry_token in resources.ollama.stream_dm(
-                        retry_system,
-                        retry_prompt,
-                        narration_style="focused",
-                    ):
-                        if retry_count >= MAX_DM_CHARS:
-                            break
-                        fragment = retry_token[: MAX_DM_CHARS - retry_count]
-                        retry_parts.append(fragment)
-                        retry_count += len(fragment)
+                    retry_text = await collect_dm_narration(
+                        resources.models, retry_system, retry_prompt, narration_style="focused"
+                    )
                 except AppError:
                     logger.warning(
-                        "Combat transition rewrite failed; applying deterministic sanitizer",
-                        exc_info=True,
-                        extra={"campaign_id": campaign_id},
+                        "Combat transition rewrite failed; using deterministic correction"
                     )
-                retry_text = trim_dm_text("".join(retry_parts))
+                    retry_text = ""
                 if retry_text and not combat_transition_violations(retry_text):
                     return retry_text
                 return safe_combat_transition(
@@ -248,24 +237,18 @@ async def stream_action(
             )
             yield emitter.emit("phase", {"status": "dm_streaming"})
             parts: list[str] = []
-            character_count = 0
-            async for token in resources.ollama.stream_dm(
-                system, prompt, narration_style=resources.narration_style
+            async for fragment in bounded_narration(
+                resources.models, system, prompt, narration_style=resources.narration_style
             ):
-                if character_count >= MAX_DM_CHARS:
-                    break
-                fragment = token[: MAX_DM_CHARS - character_count]
-                if fragment:
-                    parts.append(fragment)
-                    character_count += len(fragment)
-                    if not combat.starts:
-                        yield emitter.emit("narration_delta", {"content": fragment})
+                parts.append(fragment)
+                if not combat.starts:
+                    yield emitter.emit("narration_delta", {"content": fragment})
             dm_text = trim_dm_text("".join(parts))
             if not dm_text:
                 raise ModelResponseError("The narrator returned no playable text.")
             if combat.starts:
                 dm_text = await validate_transition(dm_text)
-                dm_text = await ensure_second_person(resources.ollama, dm_text, hero_name)
+                dm_text = await ensure_second_person(resources.models, dm_text, hero_name)
                 yield emitter.emit("narration", {"content": dm_text})
             if not combat.starts:
                 combat = assess_combat(
@@ -277,14 +260,14 @@ async def stream_action(
                     context_text=combat_context,
                 )
                 corrected = await validate_transition(dm_text) if combat.starts else dm_text
-                corrected = await ensure_second_person(resources.ollama, corrected, hero_name)
+                corrected = await ensure_second_person(resources.models, corrected, hero_name)
                 if corrected != dm_text:
                     dm_text = corrected
                     yield emitter.emit("narration_replace", {"content": dm_text})
 
             yield emitter.emit("phase", {"status": "utility_analyzing"})
             world_update = await analyse_world_update(
-                resources.ollama,
+                resources.models,
                 dm_text,
                 preparation.context.world,
                 action=preparation.action_text,
@@ -471,22 +454,16 @@ async def resolve_roll_stream(
             )
             yield emitter.emit("phase", {"status": "dm_streaming"})
             parts: list[str] = []
-            character_count = 0
-            async for token in resources.ollama.stream_dm(
-                system, prompt, narration_style=resources.narration_style
+            async for fragment in bounded_narration(
+                resources.models, system, prompt, narration_style=resources.narration_style
             ):
-                if character_count >= MAX_DM_CHARS:
-                    break
-                fragment = token[: MAX_DM_CHARS - character_count]
-                if fragment:
-                    parts.append(fragment)
-                    character_count += len(fragment)
-                    if not combat_events:
-                        yield emitter.emit("narration_delta", {"content": fragment})
+                parts.append(fragment)
+                if not combat_events:
+                    yield emitter.emit("narration_delta", {"content": fragment})
             dm_text = trim_dm_text("".join(parts))
             if not dm_text:
                 raise ModelResponseError("The narrator returned no playable text.")
-            corrected = await ensure_second_person(resources.ollama, dm_text, hero_name)
+            corrected = await ensure_second_person(resources.models, dm_text, hero_name)
             identity_changed = corrected != dm_text
             dm_text = corrected
             if combat_events and not combat_narration_is_grounded(
@@ -505,7 +482,7 @@ async def resolve_roll_stream(
 
             yield emitter.emit("phase", {"status": "utility_analyzing"})
             world_update = await analyse_world_update(
-                resources.ollama,
+                resources.models,
                 dm_text,
                 preparation.context.world,
                 action=preparation.pending_roll.action_text,

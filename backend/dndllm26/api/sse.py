@@ -10,9 +10,8 @@ SSE_PROTOCOL_VERSION = 1
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
-    lines = [f"event: {event}"]
-    lines.extend(f"data: {line}" for line in data.splitlines() or [""])
-    return "\n".join(lines) + "\n\n"
+    # JSON escapes actual CR/LF. Unicode separators stay inside the JSON string.
+    return f"event: {event}\ndata: {data}\n\n"
 
 
 @dataclass(slots=True)

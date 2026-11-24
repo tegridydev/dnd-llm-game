@@ -14,7 +14,7 @@ from dndllm26.game.text import (
     fallback_summary,
 )
 from dndllm26.game.types import WorldSnapshot, WorldUpdate
-from dndllm26.llm.ollama_client import OllamaService
+from dndllm26.llm.client import ModelService
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +22,13 @@ logger = logging.getLogger(__name__)
 def _merge_memory(
     existing: tuple[str, ...], extracted: list[str], *, limit: int = 20
 ) -> tuple[str, ...]:
-    merged: list[str] = []
-    seen: set[str] = set()
+    merged: dict[str, str] = {}
     for raw in (*existing, *extracted):
         value = clean_extracted_text(raw, "", limit=160, default="")
-        key = value.casefold()
-        if value and key not in seen:
-            seen.add(key)
-            merged.append(value)
-        if len(merged) == limit:
-            break
-    return tuple(merged)
+        if value:
+            merged.pop(value.casefold(), None)
+            merged[value.casefold()] = value
+    return tuple(list(merged.values())[-limit:])
 
 
 def _remove_resolved(existing: tuple[str, ...], resolved: list[str]) -> tuple[str, ...]:
@@ -54,32 +50,19 @@ def _matches_party(value: str, party_names: tuple[str, ...]) -> bool:
 def _merge_npcs(
     existing: tuple[str, ...], extracted: list[str], party_names: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
-    merged: list[str] = []
-    positions: dict[str, int] = {}
-    for raw in existing:
+    merged: dict[str, str] = {}
+    for raw in (*existing, *extracted):
         value = clean_extracted_text(raw, "", limit=160, default="")
-        key = normalise_npc_identity(value).casefold()
-        if value and key and key not in positions:
-            positions[key] = len(merged)
-            merged.append(value)
-    for raw in extracted:
-        value = clean_extracted_text(raw, "", limit=160, default="")
-        if not value or _matches_party(value, party_names):
-            continue
-        key = normalise_npc_identity(value).casefold()
-        if not key:
-            continue
-        match = positions.get(key)
-        if match is None:
-            positions[key] = len(merged)
-            merged.append(value)
-        else:
-            merged[match] = value
-    return tuple(merged[:20])
+        if value and not _matches_party(value, party_names):
+            key = normalise_npc_identity(value).casefold()
+            if key:
+                merged.pop(key, None)
+                merged[key] = value
+    return tuple(list(merged.values())[-20:])
 
 
 async def analyse_world_update(
-    ollama: OllamaService,
+    models: ModelService,
     dm_text: str,
     current: WorldSnapshot,
     *,
@@ -116,11 +99,11 @@ async def analyse_world_update(
         party_names=party_names,
     )
     try:
-        extracted = await ollama.chat_structured(
+        extracted = await models.chat_structured(
             system,
             user,
             WorldUpdateOutput,
-            model=ollama.utility_model,
+            model=models.utility_model,
             temperature=0.0,
             num_predict=300,
         )

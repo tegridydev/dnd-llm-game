@@ -7,15 +7,16 @@ from time import perf_counter
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from dndllm26.core.errors import AppError
 from dndllm26.core.logging import log_event
 from dndllm26.core.settings import Settings
 from dndllm26.db.models import LoreDocument, now_utc
 from dndllm26.rag.deletion import finalize_lore_deletion
-from dndllm26.rag.pdf import chunk_text, extract_pdf_text
+from dndllm26.rag.pdf import chunk_text, extract_pdf_isolated
 from dndllm26.rag.store import RagStore
+from dndllm26.rag.uploads import managed_pdf_path
 
 logger = logging.getLogger(__name__)
-_STOP = -1
 
 
 class LoreIndexWorker:
@@ -51,7 +52,7 @@ class LoreIndexWorker:
         await self.recover()
 
     def enqueue_pending(self) -> int:
-        if not self.running:
+        if not self.running or not self._rag.enabled:
             return 0
         available = max(0, self._queue.maxsize - self._queue.qsize())
         if available == 0:
@@ -61,6 +62,7 @@ class LoreIndexWorker:
                 select(LoreDocument)
                 .where(LoreDocument.status == "queued")
                 .order_by(LoreDocument.created_at)
+                .limit(available + len(self._queued) + 1)
             ).all()
         added = 0
         for record in records:
@@ -77,10 +79,7 @@ class LoreIndexWorker:
         if not self._task:
             return
         self._running = False
-        try:
-            self._queue.put_nowait(_STOP)
-        except asyncio.QueueFull:
-            self._task.cancel()
+        self._task.cancel()
         try:
             await self._task
         except asyncio.CancelledError:
@@ -98,6 +97,21 @@ class LoreIndexWorker:
             records = session.exec(
                 select(LoreDocument).where(LoreDocument.status.in_(["queued", "indexing"]))
             ).all()
+            if self._rag.enabled:
+                outdated = session.exec(
+                    select(LoreDocument)
+                    .where(LoreDocument.status == "ready")
+                    .where(
+                        (LoreDocument.index_table.is_(None))
+                        | (LoreDocument.index_table != self._rag.table_name)
+                        | (LoreDocument.embed_model != self._rag.embed_model)
+                    )
+                ).all()
+                for record in outdated:
+                    record.status = "queued"
+                    record.attempts = 0
+                    record.error = None
+                    record.updated_at = now_utc()
             for record in records:
                 if record.status == "indexing":
                     record.status = "queued"
@@ -124,7 +138,7 @@ class LoreIndexWorker:
     def enqueue(self, document_id: int, *, force: bool = False) -> bool:
         if document_id in self._queued or document_id == self._active_document_id:
             return True
-        if not self.running:
+        if not self.running or not self._rag.enabled:
             return False
         if force:
             with Session(self._engine) as session:
@@ -145,9 +159,6 @@ class LoreIndexWorker:
     async def _run(self) -> None:
         while self._running:
             document_id = await self._queue.get()
-            if document_id == _STOP:
-                self._queue.task_done()
-                break
             self._queued.discard(document_id)
             self._active_document_id = document_id
             try:
@@ -164,6 +175,8 @@ class LoreIndexWorker:
                 self.enqueue_pending()
 
     async def _process(self, document_id: int) -> None:
+        if not self._rag.enabled:
+            return
         started = perf_counter()
         result = None
         activated = False
@@ -178,8 +191,8 @@ class LoreIndexWorker:
                 and record.status == "error"
             ):
                 return
-            path = self._settings.resolved_upload_dir / record.storage_name
-            if not record.storage_name or not path.exists() or not path.is_file():
+            path = managed_pdf_path(self._settings, record.storage_name)
+            if path is None or not path.is_file():
                 record.status = "error"
                 record.error = "Uploaded PDF is missing from the managed upload directory."
                 record.updated_at = now_utc()
@@ -197,11 +210,11 @@ class LoreIndexWorker:
             session.commit()
 
         try:
-            extracted = await asyncio.to_thread(
-                extract_pdf_text,
+            extracted = await extract_pdf_isolated(
                 path,
                 max_pages=self._settings.max_pdf_pages,
                 max_characters=self._settings.max_pdf_characters,
+                timeout=self._settings.pdf_parse_timeout_seconds,
             )
             chunks = await asyncio.to_thread(
                 chunk_text,
@@ -268,7 +281,7 @@ class LoreIndexWorker:
                 )
             with Session(self._engine) as session:
                 record = session.get(LoreDocument, document_id)
-                if record:
+                if record and not activated:
                     record.status = "queued"
                     record.error = "Indexing was interrupted during shutdown."
                     record.updated_at = now_utc()
@@ -291,7 +304,11 @@ class LoreIndexWorker:
                 record = session.get(LoreDocument, document_id)
                 if record:
                     record.status = "error"
-                    record.error = str(exc)[:1_000]
+                    record.error = (
+                        exc.message
+                        if isinstance(exc, AppError)
+                        else "The lore index could not be created."
+                    )
                     record.updated_at = now_utc()
                     session.add(record)
                     session.commit()

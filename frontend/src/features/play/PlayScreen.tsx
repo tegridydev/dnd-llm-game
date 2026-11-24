@@ -43,7 +43,8 @@ export function PlayScreen({
   utilityDrawer,
   onCloseUtilityDrawer,
   mutationPending,
-  maxActionChars
+  maxActionChars,
+  onOpenSettings
 }: {
   detail: CampaignDetail | null;
   state: PlayState;
@@ -66,6 +67,7 @@ export function PlayScreen({
   onCloseUtilityDrawer: () => void;
   mutationPending: string | null;
   maxActionChars: number;
+  onOpenSettings?: () => void;
 }) {
   const actionInput = useRef<HTMLTextAreaElement>(null);
 
@@ -97,10 +99,11 @@ export function PlayScreen({
         <div className="empty">
           <BookOpen size={42} aria-hidden="true" />
           <h1>Create or select a campaign</h1>
-          <p>Your local DM, heroes, lore and campaign state will appear here.</p>
-          <button type="button" className="primary inline-primary" onClick={onCreateCampaign}>
-            Begin an adventure
-          </button>
+          <p>Pick a hero, enter a setting and play through it with your Dungeon Master.</p>
+          <div className="empty-actions">
+            <button type="button" className="primary inline-primary" onClick={onCreateCampaign}>Begin an adventure</button>
+            {onOpenSettings && <button type="button" className="secondary" onClick={onOpenSettings}>Configure model</button>}
+          </div>
         </div>
       </section>
     );
@@ -130,6 +133,12 @@ export function PlayScreen({
 
       <div className="game-layout">
         <div className="scene-column">
+          {state.streaming && (!openingReady || activeEncounter) && <div className="scene-operation">
+            <p className="hint">Your scene will be saved when generation finishes.</p>
+            <button type="button" className="secondary" onClick={onCancel} aria-label="Stop generation">
+              <Square size={15} aria-hidden="true" /> Stop
+            </button>
+          </div>}
           {state.pendingRoll && (
             <RollPrompt
               pendingRoll={state.pendingRoll}
@@ -138,7 +147,7 @@ export function PlayScreen({
             />
           )}
           {!openingReady ? (
-            openingGenerating ? <OpeningGenerationState /> : (
+            openingGenerating ? <OpeningGenerationState draft={state.draft} /> : (
               <OpeningCard opening={detail.opening} onGenerate={onGenerateOpening} />
             )
           ) : (
@@ -194,7 +203,7 @@ export function PlayScreen({
   );
 }
 
-function OpeningGenerationState() {
+function OpeningGenerationState({ draft }: { draft: string }) {
   return (
     <section className="opening-generation" aria-label="Opening scene generation" aria-busy="true">
       <div className="opening-generation-heading">
@@ -204,10 +213,9 @@ function OpeningGenerationState() {
           <h2>The Dungeon Master is setting the stage…</h2>
         </div>
       </div>
-      <p>Establishing your location, immediate tension, and first meaningful choices.</p>
-      <div className="opening-generation-lines" aria-hidden="true">
+      {draft ? <p className="opening-preview">{draft}</p> : <div className="opening-generation-lines" aria-hidden="true">
         <span /><span /><span />
-      </div>
+      </div>}
     </section>
   );
 }
@@ -222,7 +230,7 @@ function OpeningCard({ opening, onGenerate }: {
       <div>
         <span className="eyebrow">Opening scene</span>
         <h2>{opening.status === "failed" ? "The narrator could not finish" : "Your adventure is ready to begin"}</h2>
-        <p>{opening.error ?? "Generate the first playable scene with your selected local narrator."}</p>
+        <p>{opening.error ?? "Generate the first scene with your selected narrator."}</p>
       </div>
       <button type="button" className="primary inline-primary" onClick={() => void onGenerate()}>
         <RefreshCw size={16} />{opening.status === "failed" ? "Retry opening" : "Generate opening"}
@@ -784,14 +792,14 @@ function ActionComposer({
         <span>{action.length.toLocaleString()} / {maxActionChars.toLocaleString()}</span>
       </div>
       {streaming ? (
-        <button type="button" className="cancel-stream" onClick={onCancel} aria-label="Cancel generation">
+        <button type="button" className="cancel-stream" onClick={onCancel} aria-label="Stop generation">
           <Square size={17} aria-hidden="true" />
         </button>
       ) : (
         <button
           type="submit"
           disabled={Boolean(pendingRoll) || blocked || !action.trim()}
-          aria-label="Submit action"
+          aria-label="Send action"
         >
           <Send size={18} aria-hidden="true" />
           <span>Send</span>

@@ -8,7 +8,8 @@ from typing import Any
 from sqlmodel import SQLModel, create_engine
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
+_ADDED_IN_9 = "modelprofilepreference"
 
 
 def _normalise_sql(value: str | None) -> str | None:
@@ -28,22 +29,23 @@ def _schema_manifest(connection: Any) -> dict[str, object]:
         ).fetchone()[0]
         columns = tuple(
             (row[1], row[2].casefold(), row[3], row[4], row[5], row[6])
-            for row in connection.execute(f'PRAGMA table_xinfo("{table}")')
+            for row in connection.execute("SELECT * FROM pragma_table_xinfo(?)", (table,))
         )
         foreign_keys = tuple(
             sorted(
-                tuple(row[2:8]) for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')
+                tuple(row[2:8])
+                for row in connection.execute("SELECT * FROM pragma_foreign_key_list(?)", (table,))
             )
         )
         indexes: list[object] = []
-        for row in connection.execute(f'PRAGMA index_list("{table}")'):
+        for row in connection.execute("SELECT * FROM pragma_index_list(?)", (table,)):
             name = str(row[1])
             index_sql_row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)
             ).fetchone()
             index_columns = tuple(
                 (item[1], item[2], item[5])
-                for item in connection.execute(f'PRAGMA index_xinfo("{name}")')
+                for item in connection.execute("SELECT * FROM pragma_index_xinfo(?)", (name,))
             )
             indexes.append(
                 (
@@ -86,7 +88,7 @@ def validate_existing_database(database_path: Path | None) -> None:
 
     if database_path is None or not database_path.exists() or database_path.stat().st_size == 0:
         return
-    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    connection = sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         connection.execute("PRAGMA query_only=ON")
         tables = {
@@ -97,24 +99,33 @@ def validate_existing_database(database_path: Path | None) -> None:
         if not tables:
             return
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != SCHEMA_VERSION:
+        if version not in {8, SCHEMA_VERSION}:
             raise RuntimeError(
                 f"Database schema version {version} is incompatible with this release "
                 f"(expected {SCHEMA_VERSION}). Archive or remove {database_path} manually "
                 "and restart to create a fresh database. The existing file was not modified."
             )
         expected = _canonical_schema_manifest()
+        if version == 8:
+            expected = {
+                "tables": tuple(table for table in expected["tables"] if table != _ADDED_IN_9),
+                "definitions": {
+                    name: definition
+                    for name, definition in expected["definitions"].items()
+                    if name != _ADDED_IN_9
+                },
+            }
         actual = _schema_manifest(connection)
         missing = sorted(set(expected["tables"]) - tables)
         if missing:
             raise RuntimeError(
-                "The database claims the current schema version but is incomplete; missing tables: "
+                "The database claims a supported schema version but is incomplete; missing tables: "
                 + ", ".join(missing)
             )
         unexpected = sorted(tables - set(expected["tables"]))
         if unexpected:
             raise RuntimeError(
-                "The database claims the current schema version but contains unexpected tables: "
+                "The database claims a supported schema version but contains unexpected tables: "
                 + ", ".join(unexpected)
             )
         if actual != expected:
@@ -124,7 +135,7 @@ def validate_existing_database(database_path: Path | None) -> None:
                 if actual["definitions"].get(table) != expected["definitions"].get(table)
             )
             raise RuntimeError(
-                "The database claims the current schema version but its structure is incompatible"
+                "The database claims a supported schema version but its structure is incompatible"
                 + (": " + ", ".join(differing) if differing else ".")
             )
         integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]

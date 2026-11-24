@@ -10,6 +10,13 @@ const apiHost = process.env.API_HOST ?? "127.0.0.1";
 const apiPort = Number(process.env.API_PORT ?? "8765");
 const frontendHost = process.env.FRONTEND_HOST ?? "127.0.0.1";
 const frontendPort = Number(process.env.FRONTEND_PORT ?? "5173");
+const localHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+if (![apiHost, frontendHost].every((host) => localHosts.has(host)) ||
+    ![apiPort, frontendPort].every((port) => Number.isInteger(port) && port >= 1024 && port <= 65535) ||
+    apiPort === frontendPort) {
+  console.error("Set distinct local API and frontend ports on 127.0.0.1, localhost or ::1.");
+  process.exit(1);
+}
 const apiUrl = httpUrl(apiHost, apiPort);
 const webUrl = httpUrl(frontendHost, frontendPort);
 const venvPython = isWindows
@@ -37,7 +44,7 @@ async function waitFor(url: string, label: string, timeoutMs = 30_000) {
   let lastError = "not reachable";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
       if (response.ok) return;
       lastError = `HTTP ${response.status}`;
     } catch (error) {
@@ -72,7 +79,7 @@ if (!canRun(["uv", "--version"])) {
 
 console.log(`Mode: ${production ? "production preview" : "development"}`);
 console.log("Synchronising the Python environment...");
-spawnSync(["uv", "sync", ...(production ? [] : ["--extra", "dev"])]);
+spawnSync(["uv", "sync", "--locked", ...(production ? ["--no-dev"] : ["--extra", "dev"])]);
 console.log("Installing frontend packages from bun.lock...");
 spawnSync(["bun", "install", "--frozen-lockfile"], frontend);
 if (production) {
@@ -84,7 +91,7 @@ const backendEnvironment = {
   PYTHONPATH: join(root, "backend"),
   API_HOST: apiHost,
   API_PORT: String(apiPort),
-  API_RELOAD: production ? "false" : "true",
+  API_RELOAD: production || isWindows ? "false" : "true",
   FRONTEND_HOST: frontendHost,
   FRONTEND_PORT: String(frontendPort)
 };
@@ -97,12 +104,15 @@ const apiProcess = Bun.spawn({
   stderr: "inherit"
 });
 
+const webEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !/^(LLM_|OLLAMA_)/i.test(key))
+);
 const webProcess = Bun.spawn({
   cmd: production
-    ? ["bun", "run", "preview", "--", "--host", frontendHost, "--port", String(frontendPort)]
-    : ["bun", "run", "dev", "--", "--host", frontendHost, "--port", String(frontendPort)],
+    ? ["bun", "run", "preview", "--", "--host", frontendHost, "--port", String(frontendPort), "--strictPort"]
+    : ["bun", "run", "dev", "--", "--host", frontendHost, "--port", String(frontendPort), "--strictPort"],
   cwd: frontend,
-  env: { ...process.env, VITE_API_BASE: `${apiUrl}/api` },
+  env: { ...webEnvironment, VITE_API_BASE: `${apiUrl}/api` },
   stdout: "inherit",
   stderr: "inherit"
 });
@@ -128,7 +138,7 @@ try {
   ]);
   console.log(`API: ${apiUrl}`);
   console.log(`Web: ${webUrl}`);
-  await openBrowser(webUrl);
+  if (!process.argv.includes("--no-browser")) await openBrowser(webUrl);
   const exitCode = await Promise.race([apiProcess.exited, webProcess.exited]);
   shutdown();
   process.exit(exitCode ?? 0);

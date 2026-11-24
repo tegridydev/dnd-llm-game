@@ -18,6 +18,7 @@ export function Dialog({
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
     const initialFocus = dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]")
@@ -32,6 +33,7 @@ export function Dialog({
     return () => {
       dialog.removeEventListener("cancel", onCancel);
       if (dialog.open && typeof dialog.close === "function") dialog.close();
+      if (returnFocus?.isConnected && document.activeElement !== returnFocus) returnFocus.focus();
     };
   }, []);
 
@@ -40,7 +42,12 @@ export function Dialog({
       ref={dialogRef}
       className={`dialog-surface ${className}`.trim()}
       aria-labelledby={titleId}
-      onMouseDown={(event) => event.currentTarget === event.target && onClose()}
+      onClick={(event) => {
+        if (event.currentTarget !== event.target) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right ||
+          event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+      }}
     >
       {children}
     </dialog>

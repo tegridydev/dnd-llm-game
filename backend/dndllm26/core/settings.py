@@ -4,8 +4,10 @@ from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from dndllm26.llm.providers import configuration
 
 APP_ROOT = Path(__file__).resolve().parents[3]
 _LOOPBACK_NAMES = {"localhost", "ip6-localhost"}
@@ -33,7 +35,9 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///data/dndllm26.db"
     upload_dir: Path = Path("data/uploads")
-    lancedb_dir: Path = Path("data/lancedb")
+    lore_index_dir: Path = Field(
+        default=Path("data/lore"), validation_alias=AliasChoices("lore_index_dir", "lancedb_dir")
+    )
 
     ollama_host: str = "http://127.0.0.1:11434"
     ollama_chat_model: str = "llama3.2:3b"
@@ -41,6 +45,20 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
     ollama_timeout_seconds: float = Field(default=120.0, ge=5.0, le=600.0)
     ollama_health_timeout_seconds: float = Field(default=3.0, ge=0.5, le=30.0)
+
+    llm_provider: str = "ollama"
+    llm_base_url: str = ""
+    llm_api_key: SecretStr = SecretStr("")
+    llm_allow_remote: bool = False
+    llm_chat_model: str = ""
+    llm_utility_model: str = ""
+    llm_embed_provider: str = "ollama"
+    llm_embed_base_url: str = ""
+    llm_embed_api_key: SecretStr = SecretStr("")
+    llm_embed_model: str = ""
+    llm_allow_remote_embeddings: bool = False
+    llm_timeout_seconds: float | None = Field(default=None, ge=5, le=600)
+    pdf_parse_timeout_seconds: float = Field(default=45, ge=1, le=300)
 
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8765, ge=1024, le=65535)
@@ -64,6 +82,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         validate_default=True,
+        hide_input_in_errors=True,
     )
 
     @field_validator("ollama_chat_model", "ollama_embed_model")
@@ -110,6 +129,7 @@ class Settings(BaseSettings):
     def validate_chunking(self) -> "Settings":
         if self.lore_chunk_overlap_words >= self.lore_chunk_words:
             raise ValueError("LORE_CHUNK_OVERLAP_WORDS must be smaller than LORE_CHUNK_WORDS")
+        configuration(self)
         return self
 
     def resolve_path(self, value: Path) -> Path:
@@ -121,8 +141,8 @@ class Settings(BaseSettings):
         return self.resolve_path(self.upload_dir)
 
     @property
-    def resolved_lancedb_dir(self) -> Path:
-        return self.resolve_path(self.lancedb_dir)
+    def resolved_lore_index_dir(self) -> Path:
+        return self.resolve_path(self.lore_index_dir)
 
     @property
     def resolved_database_url(self) -> str:
@@ -159,7 +179,7 @@ class Settings(BaseSettings):
     def prepare_filesystem(self) -> None:
         for directory in (
             self.resolved_upload_dir,
-            self.resolved_lancedb_dir,
+            self.resolved_lore_index_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         if self.database_path is not None:

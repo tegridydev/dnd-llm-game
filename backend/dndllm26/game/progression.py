@@ -4,18 +4,44 @@ import json
 
 from sqlmodel import Session, select
 
+from dndllm26.game.lifecycle import playable_campaign
 from dndllm26.core.errors import ConflictError, NotFoundError
-from dndllm26.db.models import Campaign, Character, Encounter, Quest, Turn, now_utc
+from dndllm26.db.models import (
+    ActionRequest,
+    CampaignOpening,
+    Character,
+    Encounter,
+    Quest,
+    Turn,
+    now_utc,
+)
 from dndllm26.game.catalog import CLASSES, ability_modifier, normalise_resources
 from dndllm26.game.dice import roll_formula
 
 LEVEL_THRESHOLDS = {1: 0, 2: 1, 3: 2, 4: 4, 5: 6}
 
 
+def _require_idle(session: Session, campaign_id: int) -> None:
+    if (
+        session.exec(
+            select(ActionRequest.id)
+            .where(ActionRequest.campaign_id == campaign_id)
+            .where(ActionRequest.status.in_(["processing", "roll_required"]))
+        ).first()
+        is not None
+        or session.exec(
+            select(CampaignOpening.id)
+            .where(CampaignOpening.campaign_id == campaign_id)
+            .where(CampaignOpening.status == "processing")
+        ).first()
+        is not None
+    ):
+        raise ConflictError("Finish the current turn before changing party progression.")
+
+
 def rest_party(session: Session, campaign_id: int, kind: str, hit_dice: int) -> list[str]:
-    campaign = session.get(Campaign, campaign_id)
-    if not campaign:
-        raise NotFoundError("Campaign not found.")
+    campaign = playable_campaign(session, campaign_id)
+    _require_idle(session, campaign_id)
     active = session.exec(
         select(Encounter)
         .where(Encounter.campaign_id == campaign_id)
@@ -46,19 +72,22 @@ def rest_party(session: Session, campaign_id: int, kind: str, hit_dice: int) -> 
             events.append(f"{character.name} completes a long rest.")
         else:
             available = int(resources.get("hit_dice", character.level))
-            spent = min(hit_dice, available)
+            spent = min(hit_dice, available) if 0 < character.current_hp < character.max_hp else 0
             if spent:
                 hit_die = int(CLASSES[character.character_class]["hit_die"])
                 healing = roll_formula(
                     f"{spent}d{hit_die}{ability_modifier(character.constitution) * spent:+d}"
                 ).total
-                character.current_hp = min(character.max_hp, character.current_hp + max(0, healing))
+                recovered = min(character.max_hp - character.current_hp, max(0, healing))
+                character.current_hp += recovered
                 resources["hit_dice"] = available - spent
                 events.append(
-                    f"{character.name} spends {spent} hit dice and recovers {max(0, healing)} HP."
+                    f"{character.name} spends {spent} hit dice and recovers {recovered} HP."
                 )
         character.resources_json = json.dumps(resources)
         session.add(character)
+    if not events:
+        return ["No injured party member could spend a hit die."]
     session.add(Turn(campaign_id=campaign_id, speaker="System", content=" ".join(events)))
     campaign.updated_at = now_utc()
     session.add(campaign)
@@ -67,9 +96,10 @@ def rest_party(session: Session, campaign_id: int, kind: str, hit_dice: int) -> 
 
 
 def complete_quest(session: Session, campaign_id: int, quest_id: int) -> dict[str, object]:
-    campaign = session.get(Campaign, campaign_id)
+    campaign = playable_campaign(session, campaign_id)
+    _require_idle(session, campaign_id)
     quest = session.get(Quest, quest_id)
-    if not campaign or not quest or quest.campaign_id != campaign_id:
+    if not quest or quest.campaign_id != campaign_id:
         raise NotFoundError("Quest not found.")
     if quest.status != "active":
         raise ConflictError("Only an active quest can be completed.")
@@ -90,6 +120,7 @@ def complete_quest(session: Session, campaign_id: int, quest_id: int) -> dict[st
         resources = normalise_resources(
             character.character_class, character.level, json.loads(character.resources_json)
         )
+        previous_level = character.level
         while character.level < target_level:
             character.level += 1
             gain = max(
@@ -108,8 +139,9 @@ def complete_quest(session: Session, campaign_id: int, quest_id: int) -> dict[st
         resources["class_actions"] = CLASSES[character.character_class]["actions"]
         character.resources_json = json.dumps(resources)
         session.add(character)
-        if character.level == target_level and target_level > 1:
+        if character.level > previous_level:
             levelled.append(character.name)
+    campaign.updated_at = now_utc()
     session.add(quest)
     session.add(campaign)
     session.add(

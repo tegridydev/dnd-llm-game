@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, create_engine
 
 from dndllm26.core.settings import Settings
@@ -14,6 +15,7 @@ def create_database_engine(settings: Settings) -> Engine:
         settings.resolved_database_url,
         connect_args={"check_same_thread": False},
         pool_pre_ping=True,
+        **({"poolclass": StaticPool} if settings.database_path is None else {}),
     )
 
     @event.listens_for(engine, "connect")
@@ -30,9 +32,12 @@ def initialise_database(settings: Settings) -> Engine:
     settings.prepare_filesystem()
     validate_existing_database(settings.database_path)
     engine = create_database_engine(settings)
-    SQLModel.metadata.create_all(engine)
+    # Leave v8 saves intact if the additive migration fails.
     with engine.begin() as connection:
-        connection.execute(text(f"PRAGMA user_version={SCHEMA_VERSION}"))
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        SQLModel.metadata.create_all(connection)
+        connection.exec_driver_sql(f"PRAGMA user_version={SCHEMA_VERSION}")
+    with engine.begin() as connection:
         connection.execute(text("PRAGMA journal_mode=WAL"))
         connection.execute(text("PRAGMA synchronous=NORMAL"))
         enabled = connection.execute(text("PRAGMA foreign_keys")).scalar_one()

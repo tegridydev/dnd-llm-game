@@ -2,21 +2,22 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager, suppress
 import logging
+import sys
 from typing import AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from dndllm26 import __version__
 from dndllm26.api.middleware import (
     LocalOnlyMiddleware,
     RequestContextMiddleware,
-    UploadBodyLimitMiddleware,
+    RequestLimitsMiddleware,
 )
 from dndllm26.api.routes import router
 from dndllm26.core.errors import AppError
@@ -29,7 +30,7 @@ from dndllm26.db.session import initialise_database
 from dndllm26.game.campaigns import seed_default_heroes
 from dndllm26.game.openings import recover_openings
 from dndllm26.game.play import recover_stale_operations
-from dndllm26.llm.ollama_client import OllamaService
+from dndllm26.llm.client import ModelService
 from dndllm26.rag.store import RagStore
 from dndllm26.rag.worker import LoreIndexWorker
 
@@ -47,20 +48,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(resolved_settings.log_level)
         engine = initialise_database(resolved_settings)
-        ollama = OllamaService(resolved_settings)
+        models = ModelService(resolved_settings)
         with Session(engine) as session:
             preference = get_or_create_model_preferences(session, resolved_settings)
-        ollama.configure_models(
+        models.configure_models(
             chat_model=preference.chat_model,
             utility_model=preference.utility_model,
             embed_model=preference.embed_model,
         )
-        rag = RagStore(resolved_settings, ollama)
+        rag = RagStore(resolved_settings, models)
         worker = LoreIndexWorker(resolved_settings, engine, rag)
         resources = AppResources(
             settings=resolved_settings,
             engine=engine,
-            ollama=ollama,
+            models=models,
             rag=rag,
             lore_worker=worker,
             narration_style=preference.narration_style,
@@ -86,15 +87,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             with suppress(Exception):
                 await worker.stop()
             with suppress(Exception):
-                await ollama.close()
+                await models.close()
             engine.dispose()
             app.state.resources = None
 
     app = FastAPI(
         title="DNDLLM26",
-        version="0.3.0",
+        version=__version__,
         lifespan=lifespan,
-        docs_url="/api/docs",
+        docs_url=None,
         redoc_url=None,
         openapi_url="/api/openapi.json",
     )
@@ -108,12 +109,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         expose_headers=["X-Request-ID"],
         max_age=600,
     )
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=["127.0.0.1", "localhost", "[::1]", "::1", "testserver"],
-    )
+    app.add_middleware(RequestLimitsMiddleware, settings=resolved_settings)
     app.add_middleware(LocalOnlyMiddleware, settings=resolved_settings)
-    app.add_middleware(UploadBodyLimitMiddleware, settings=resolved_settings)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(router, prefix="/api")
 
@@ -157,7 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         codes = {
             404: "not_found",
             409: "conflict",
-            413: "upload_too_large",
+            413: "upload_too_large" if request.url.path == "/api/lore/upload" else "body_too_large",
             422: "validation_error",
         }
         message = (
@@ -186,8 +183,14 @@ def run() -> None:
         "dndllm26.main:app",
         host=settings.api_host,
         port=settings.api_port,
-        reload=settings.api_reload,
+        # Uvicorn reload uses a selector loop on Windows, which cannot spawn PDF workers.
+        reload=settings.api_reload and sys.platform != "win32",
         log_config=None,
+        proxy_headers=False,
+        server_header=False,
+        ws="none",
+        limit_concurrency=32,
+        timeout_graceful_shutdown=5,
     )
 
 

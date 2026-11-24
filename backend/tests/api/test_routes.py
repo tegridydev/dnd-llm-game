@@ -132,7 +132,7 @@ def test_model_settings_validate_roles_and_confirm_lore_reindex(settings) -> Non
     with TestClient(app) as client:
         resources = app.state.resources
 
-        async def catalog() -> list[dict[str, object]]:
+        async def catalog(**_options) -> list[dict[str, object]]:
             return [
                 {"name": "story:latest", "capabilities": ["completion"]},
                 {"name": "rules:latest", "capabilities": ["completion"]},
@@ -140,7 +140,7 @@ def test_model_settings_validate_roles_and_confirm_lore_reindex(settings) -> Non
                 {"name": "vectors:new", "capabilities": ["embedding"]},
             ]
 
-        resources.ollama.model_catalog = catalog
+        resources.models.model_catalog = catalog
         current = client.get("/api/settings/models")
         assert current.status_code == 200
         assert current.json()["narration_style"] == "balanced"
@@ -148,14 +148,14 @@ def test_model_settings_validate_roles_and_confirm_lore_reindex(settings) -> Non
         invalid = client.patch(
             "/api/settings/models",
             json={
-                "chat_model": "vectors:latest",
-                "utility_model": "rules:latest",
-                "embed_model": "vectors:latest",
+                "chat_model": "",
+                "utility_model": "",
+                "embed_model": "",
                 "narration_style": "focused",
             },
         )
         assert invalid.status_code == 422
-        assert "does not support completion" in invalid.json()["message"]
+        assert "Choose a Dungeon Master" in invalid.json()["message"]
 
         with Session(resources.engine) as session:
             session.add(
@@ -186,7 +186,7 @@ def test_model_settings_validate_roles_and_confirm_lore_reindex(settings) -> Non
         assert saved.json()["embed_model"] == "vectors:new"
         assert saved.json()["narration_style"] == "focused"
         assert saved.json()["reindex_queued"] == 1
-        assert resources.ollama.embed_model == "vectors:new"
+        assert resources.models.embed_model == "vectors:new"
 
 
 def test_campaign_opening_failure_is_retryable_without_persisting_fallback(settings) -> None:
@@ -200,7 +200,7 @@ def test_campaign_opening_failure_is_retryable_without_persisting_fallback(setti
             if False:
                 yield ""
 
-        resources.ollama.stream_dm = empty_stream
+        resources.models.stream_dm = empty_stream
         failed = client.post(
             f"/api/campaigns/{campaign_id}/opening/stream",
             headers={"Idempotency-Key": "opening-retry-1"},
@@ -228,8 +228,8 @@ def test_campaign_opening_failure_is_retryable_without_persisting_fallback(setti
                 objective_changed=True,
             )
 
-        resources.ollama.stream_dm = good_stream
-        resources.ollama.chat_structured = structured
+        resources.models.stream_dm = good_stream
+        resources.models.chat_structured = structured
         retried = client.post(
             f"/api/campaigns/{campaign_id}/opening/stream",
             headers={"Idempotency-Key": "opening-retry-1"},
@@ -240,3 +240,20 @@ def test_campaign_opening_failure_is_retryable_without_persisting_fallback(setti
         assert detail["opening"]["status"] == "complete"
         assert detail["world_state"]["current_location"] == "Old Gate"
         assert sum(turn["speaker"] == "DM" for turn in detail["turns"]) == 1
+
+
+def test_untrusted_host_rejected_and_archived_campaign_is_read_only(settings) -> None:
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/heroes", headers={"Host": "example.invalid"}).status_code == 400
+        assert client.get("/api/heroes", headers={"Host": "[::1]:8765"}).status_code == 200
+        campaign_id = _create_campaign(client)["id"]
+        assert (
+            client.patch(f"/api/campaigns/{campaign_id}", json={"archived": True}).status_code
+            == 200
+        )
+        opening = client.post(f"/api/campaigns/{campaign_id}/opening/stream")
+        rest = client.post(
+            f"/api/campaigns/{campaign_id}/rest", json={"kind": "long", "hit_dice": 0}
+        )
+        assert opening.status_code == rest.status_code == 409
+        assert client.get(f"/api/campaigns/{campaign_id}/export").status_code == 200

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import aclosing
 import logging
 
 from dndllm26.core.errors import ModelResponseError, ModelUnavailableError
@@ -9,32 +11,44 @@ from dndllm26.game.prompts import (
     safe_second_person_narration,
 )
 from dndllm26.game.text import MAX_DM_CHARS, trim_dm_text
-from dndllm26.llm.ollama_client import OllamaService
+from dndllm26.llm.client import ModelService
 
 logger = logging.getLogger(__name__)
 
 
+async def bounded_narration(
+    models: ModelService, system: str, prompt: str, *, narration_style: str
+) -> AsyncIterator[str]:
+    remaining = MAX_DM_CHARS
+    async with aclosing(
+        models.stream_dm(system, prompt, narration_style=narration_style)
+    ) as stream:
+        async for token in stream:
+            fragment = token[:remaining]
+            if fragment:
+                remaining -= len(fragment)
+                yield fragment
+            if remaining == 0:
+                return
+
+
 async def collect_dm_narration(
-    ollama: OllamaService,
-    system: str,
-    prompt: str,
-    *,
-    narration_style: str,
+    models: ModelService, system: str, prompt: str, *, narration_style: str
 ) -> str:
-    parts: list[str] = []
-    character_count = 0
-    async for token in ollama.stream_dm(system, prompt, narration_style=narration_style):
-        if character_count >= MAX_DM_CHARS:
-            break
-        fragment = token[: MAX_DM_CHARS - character_count]
-        if fragment:
-            parts.append(fragment)
-            character_count += len(fragment)
-    return trim_dm_text("".join(parts))
+    return trim_dm_text(
+        "".join(
+            [
+                fragment
+                async for fragment in bounded_narration(
+                    models, system, prompt, narration_style=narration_style
+                )
+            ]
+        )
+    )
 
 
 async def ensure_second_person(
-    ollama: OllamaService,
+    models: ModelService,
     text: str,
     protagonist: str,
 ) -> str:
@@ -44,7 +58,7 @@ async def ensure_second_person(
     system, prompt = build_identity_retry_messages(text, protagonist)
     try:
         retry = await collect_dm_narration(
-            ollama,
+            models,
             system,
             prompt,
             narration_style="focused",

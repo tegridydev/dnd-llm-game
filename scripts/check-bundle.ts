@@ -1,14 +1,30 @@
-import { readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const assets = resolve(import.meta.dir, "../frontend/dist/assets");
-const javascriptBytes = readdirSync(assets)
-  .filter((name) => name.endsWith(".js"))
-  .reduce((total, name) => total + statSync(join(assets, name)).size, 0);
-const budget = 276_000;
+type Chunk = { file: string; isEntry?: boolean; imports?: string[] };
+const dist = resolve(import.meta.dir, "../frontend/dist");
+const manifest = JSON.parse(readFileSync(join(dist, ".vite", "manifest.json"), "utf8")) as Record<string, Chunk>;
+const entries = Object.keys(manifest).filter((key) => manifest[key].isEntry);
+if (!entries.length) throw new Error("The Vite manifest contains no application entry.");
 
-if (javascriptBytes > budget) {
-  console.error(`Frontend JavaScript is ${javascriptBytes} bytes; budget is ${budget} bytes.`);
-  process.exit(1);
+const initial = new Set<string>();
+function addInitial(key: string): void {
+  const chunk = manifest[key];
+  if (!chunk) throw new Error(`Missing bundle manifest entry ${key}`);
+  if (initial.has(chunk.file)) return;
+  initial.add(chunk.file);
+  for (const imported of chunk.imports ?? []) addInitial(imported);
 }
-console.log(`Frontend JavaScript: ${javascriptBytes}/${budget} bytes.`);
+entries.forEach(addInitial);
+
+const weight = (paths: Iterable<string>) => [...paths]
+  .filter((name) => name.endsWith(".js"))
+  .reduce((total, name) => total + statSync(join(dist, name)).size, 0);
+const all = readdirSync(join(dist, "assets")).map((name) => `assets/${name}`);
+for (const [label, bytes, budget] of [
+  ["Initial JavaScript", weight(initial), 276_000],
+  ["JavaScript including optional panels", weight(all), 300_000]
+] as const) {
+  if (bytes > budget) throw new Error(`${label}: ${bytes} bytes exceeds the ${budget} byte budget.`);
+  console.log(`${label}: ${bytes}/${budget} bytes.`);
+}

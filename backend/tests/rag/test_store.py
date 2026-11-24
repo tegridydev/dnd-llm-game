@@ -5,86 +5,69 @@ from pathlib import Path
 
 import pytest
 
+from dndllm26.core.errors import LoreProcessingError
 from dndllm26.core.settings import Settings
-from dndllm26.rag.store import RagStore
+from dndllm26.rag.store import LoreReference, RagStore
 
 
-class FakeOllama:
+class FakeModels:
     embed_model = "test-embed"
+    embedding_identity = "test"
 
-    async def embed_batch(self, texts):  # type: ignore[no-untyped-def]
-        return [[float(index), 1.0] for index, _text in enumerate(texts)]
+    async def embed_batch(self, texts):
+        return [[1.0, 0.0] if "winter" in text else [0.0, 1.0] for text in texts]
+
+    async def embed(self, text):
+        return (await self.embed_batch([text]))[0]
 
 
 def make_store(tmp_path: Path) -> RagStore:
-    settings = Settings(
-        app_root=tmp_path,
-        database_url=f"sqlite:///{tmp_path / 'data' / 'test.db'}",
-        data_dir=tmp_path / "data",
-        upload_dir=tmp_path / "data" / "uploads",
-        lancedb_dir=tmp_path / "data" / "lancedb",
-    )
-    return RagStore(settings, FakeOllama())  # type: ignore[arg-type]
+    return RagStore(Settings(app_root=tmp_path, lancedb_dir=tmp_path), FakeModels())
 
 
-def test_each_index_attempt_uses_a_fresh_inactive_key(tmp_path: Path) -> None:
-    store = make_store(tmp_path)
-    rows: list[list[dict[str, object]]] = []
-    store._add_rows_sync = lambda _table, values: rows.append(values)  # type: ignore[method-assign]
-    first = asyncio.run(
-        store.index_chunks(
-            document_id=7,
-            filename="realm.pdf",
-            content_sha256="a" * 64,
-            chunks=["one"],
-            batch_size=1,
-            index_version=1,
+def test_only_active_compatible_index_is_searched_and_deletion_is_final(tmp_path):
+    async def run():
+        store = make_store(tmp_path)
+        args = dict(document_id=7, filename="realm.pdf", content_sha256="a" * 64, batch_size=1)
+        old = await store.index_chunks(**args, chunks=["old winter"], index_version=1)
+        new = await store.index_chunks(**args, chunks=["summer", "new winter"], index_version=2)
+        assert old.index_key != new.index_key
+        old_reference = LoreReference(
+            7, "realm.pdf", old.index_key, old.table_name, store.embed_model, 2
         )
-    )
-    second = asyncio.run(
-        store.index_chunks(
-            document_id=7,
-            filename="realm.pdf",
-            content_sha256="a" * 64,
-            chunks=["one"],
-            batch_size=1,
-            index_version=2,
+        new_reference = LoreReference(
+            7, "realm.pdf", new.index_key, new.table_name, store.embed_model, 2
         )
-    )
-    assert first.index_key != second.index_key
-    assert rows[0][0]["index_key"] == first.index_key
-    assert rows[1][0]["index_key"] == second.index_key
+        report = await store.search("winter", limit=2, documents=[new_reference])
+        assert [row["text"] for row in report] == ["new winter", "summer"]
+        store._models.embedding_identity = "different-provider"
+        assert await store.search("winter", limit=2, documents=[new_reference]) == []
+        store._models.embedding_identity = "test"
+        await store.cleanup_stale(document_id=7, active_index_key=new.index_key)
+        assert await store.search("winter", limit=2, documents=[old_reference]) == []
+        await store.delete_document(7)
+        assert await store.search("winter", limit=2, documents=[new_reference]) == []
+
+    asyncio.run(run())
 
 
-def test_failed_index_attempt_only_cleans_its_new_key(tmp_path: Path) -> None:
-    store = make_store(tmp_path)
-    deleted: list[tuple[str, str]] = []
+def test_invalid_vector_does_not_open_index(tmp_path):
+    async def run():
+        store = make_store(tmp_path)
 
-    def fail_add(_table: str, _rows: list[dict[str, object]]) -> None:
-        raise RuntimeError("write failed")
+        async def zeros(_):
+            return [[0.0, 0.0]]
 
-    store._add_rows_sync = fail_add  # type: ignore[method-assign]
-    store._delete_index_sync = lambda table, key: deleted.append((table, key))  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError, match="write failed"):
-        asyncio.run(
-            store.index_chunks(
+        store._models.embed_batch = zeros
+        with pytest.raises(LoreProcessingError, match="zero"):
+            await store.index_chunks(
                 document_id=7,
                 filename="realm.pdf",
                 content_sha256="a" * 64,
-                chunks=["one"],
                 batch_size=1,
-                index_version=2,
+                chunks=["invalid"],
+                index_version=1,
             )
-        )
-    assert len(deleted) == 1
-    assert deleted[0][1].startswith("7:")
+        assert not (tmp_path / "lore.sqlite3").exists()
 
-
-def test_delete_document_removes_all_versions(tmp_path: Path) -> None:
-    store = make_store(tmp_path)
-    deleted: list[tuple[int, str | None]] = []
-    store._cleanup_document_sync = lambda document_id, active: deleted.append(  # type: ignore[method-assign]
-        (document_id, active)
-    )
-    asyncio.run(store.delete_document(9))
-    assert deleted == [(9, None)]
+    asyncio.run(run())

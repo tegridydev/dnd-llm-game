@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -94,7 +94,7 @@ def test_gameplay_schema_rejects_unknown_null_partial_and_non_positive_values() 
 
 
 def test_composite_cursor_pages_equal_timestamps_without_loss(engine) -> None:
-    created_at = datetime(2026, 8, 21, 12, 0, 0)
+    created_at = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
     with Session(engine) as session:
         campaign = Campaign(title="Cursor", setting="Test", tone="Test")
         session.add(campaign)

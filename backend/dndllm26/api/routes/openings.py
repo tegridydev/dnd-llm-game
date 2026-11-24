@@ -14,7 +14,8 @@ from dndllm26.api.sse import SseEmitter, stream_headers
 from dndllm26.core.errors import AppError, ModelResponseError
 from dndllm26.core.resources import AppResources
 from dndllm26.game.openings import complete_opening, fail_opening, prepare_opening
-from dndllm26.game.narration import collect_dm_narration, ensure_second_person
+from dndllm26.game.narration import bounded_narration, ensure_second_person
+from dndllm26.game.text import trim_dm_text
 from dndllm26.game.prompts import build_campaign_intro_messages, protagonist_name
 from dndllm26.game.world import analyse_world_update
 
@@ -85,24 +86,25 @@ async def stream_opening(
                     logger.warning("Opening lore retrieval failed; continuing without RAG")
             system, prompt = build_campaign_intro_messages(preparation.context, lore)
             yield emitter.emit("phase", {"status": "dm_streaming"})
-            narration = await collect_dm_narration(
-                resources.ollama,
-                system,
-                prompt,
-                narration_style=resources.narration_style,
-            )
+            fragments = []
+            async for fragment in bounded_narration(
+                resources.models, system, prompt, narration_style=resources.narration_style
+            ):
+                fragments.append(fragment)
+                yield emitter.emit("narration_delta", {"content": fragment})
+            narration = trim_dm_text("".join(fragments))
             if not narration:
                 raise ModelResponseError("The narrator returned no playable opening text.")
             hero_name = protagonist_name(preparation.context)
             narration = await ensure_second_person(
-                resources.ollama,
+                resources.models,
                 narration,
                 hero_name,
             )
-            yield emitter.emit("narration", {"content": narration})
+            yield emitter.emit("narration_replace", {"content": narration})
             yield emitter.emit("phase", {"status": "utility_analyzing"})
             world_update = await analyse_world_update(
-                resources.ollama,
+                resources.models,
                 narration,
                 preparation.context.world,
                 action="Begin the campaign",

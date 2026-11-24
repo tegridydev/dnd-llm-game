@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 
@@ -63,7 +64,7 @@ def test_schema_v7_is_rejected_without_modification(tmp_path: Path) -> None:
     connection.close()
 
     before = settings.database_path.read_bytes()
-    with pytest.raises(RuntimeError, match="expected 8"):
+    with pytest.raises(RuntimeError, match="expected 9"):
         initialise_database(settings)
     assert settings.database_path.read_bytes() == before
 
@@ -86,3 +87,34 @@ def test_current_database_with_missing_partial_index_is_rejected_read_only(tmp_p
     with pytest.raises(RuntimeError, match="structure is incompatible"):
         validate_existing_database(settings.database_path)
     assert settings.database_path.read_bytes() == before
+
+
+def test_schema_eight_migrates_without_changing_existing_campaign(settings) -> None:
+    from sqlmodel import Session
+
+    from dndllm26.db.models import Campaign, RuntimePreference
+
+    engine = initialise_database(settings)
+    with Session(engine) as session:
+        campaign = Campaign(title="Saved adventure")
+        session.add(campaign)
+        session.add(
+            RuntimePreference(
+                chat_model="old-chat", utility_model="old-rules", embed_model="old-embed"
+            )
+        )
+        session.commit()
+        campaign_id = campaign.id
+    engine.dispose()
+    with closing(sqlite3.connect(settings.database_path)) as db, db:
+        db.execute("DROP TABLE modelprofilepreference")
+        db.execute("PRAGMA user_version=8")
+    migrated = initialise_database(settings)
+    try:
+        with Session(migrated) as session:
+            assert session.get(Campaign, campaign_id).title == "Saved adventure"
+            assert session.get(RuntimePreference, 1).chat_model == "old-chat"
+        with closing(sqlite3.connect(settings.database_path)) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+    finally:
+        migrated.dispose()

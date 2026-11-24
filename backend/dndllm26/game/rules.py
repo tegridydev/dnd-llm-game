@@ -10,24 +10,24 @@ from dndllm26.game.schemas import (
     normalise_roll_decision,
 )
 from dndllm26.game.types import CampaignContext
-from dndllm26.llm.ollama_client import OllamaService
+from dndllm26.llm.client import ModelService
 
 logger = logging.getLogger(__name__)
 
 
 async def decide_roll(
-    ollama: OllamaService,
+    models: ModelService,
     context: CampaignContext,
     action: str,
 ) -> RollDecisionOutput:
     fallback = fallback_roll_decision(action, context.world.npcs)
     system, user = build_roll_decision_messages(context, action)
     try:
-        decision = await ollama.chat_structured(
+        decision = await models.chat_structured(
             system,
             user,
             RollDecisionOutput,
-            model=ollama.utility_model,
+            model=models.utility_model,
             temperature=0.0,
             num_predict=260,
         )

@@ -154,7 +154,8 @@ export type Health = {
   database: HealthComponent;
   filesystem: HealthComponent;
   worker: WorkerStatus;
-  ollama: HealthComponent;
+  connection: HealthComponent;
+  provider: ProviderInfo;
   model_runtime: {
     narrator: ModelRuntimeComponent;
     utility: ModelRuntimeComponent;
@@ -173,12 +174,23 @@ export type ModelRuntimeComponent = {
 };
 
 export type ModelOption = { name: string; capabilities: string[] };
+export type ProviderInfo = {
+  name: string;
+  label: string;
+  remote: boolean;
+  embedding_label: string | null;
+  embedding_remote: boolean;
+};
+
 export type ModelSettings = {
   chat_model: string;
   utility_model: string;
   embed_model: string;
   narration_style: "focused" | "balanced" | "cinematic";
+  provider: ProviderInfo;
   models: ModelOption[];
+  embedding_models: ModelOption[];
+  discovery_error: string | null;
   model_runtime: Health["model_runtime"];
   lore_document_count: number;
   reindex_queued: number;

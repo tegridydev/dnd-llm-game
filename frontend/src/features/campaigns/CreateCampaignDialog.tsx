@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, LoaderCircle, Shield, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Dialog } from "../../components/Dialog";
 import type { CampaignPayload, Hero, LoreDocument } from "../../types";
 
@@ -15,12 +15,18 @@ export function CreateCampaignDialog({ draft, heroes, lore, protagonistId, compa
   onCancel: () => void; onConfirm: () => void;
 }) {
   const [step, setStep] = useState(1);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const previousStep = useRef(step);
+  useEffect(() => {
+    if (step !== previousStep.current) heading.current?.focus();
+    previousStep.current = step;
+  }, [step]);
   const conceptValid = Boolean(draft.title.trim() && draft.setting.trim() && draft.tone.trim());
   const canCreate = conceptValid && Boolean(protagonistId);
   const protagonist = heroes.find((hero) => hero.id === protagonistId);
   return <Dialog titleId="create-campaign-title" onClose={creating ? () => undefined : onCancel} className="campaign-dialog">
     <div className="modal-head"><div><span className="eyebrow">New adventure · Step {step} of 3</span>
-      <h2 id="create-campaign-title">{step === 1 ? "Shape your world" : step === 2 ? "Choose your party" : "Review your adventure"}</h2></div>
+      <h2 ref={heading} tabIndex={-1} id="create-campaign-title">{step === 1 ? "Shape your world" : step === 2 ? "Choose your party" : "Review your adventure"}</h2></div>
       <button type="button" className="icon-button" onClick={onCancel} disabled={creating} aria-label="Close campaign setup"><X size={17} /></button></div>
     <div className="step-progress" aria-label={`Step ${step} of 3`}><span className={step >= 1 ? "active" : ""} /><span className={step >= 2 ? "active" : ""} /><span className={step >= 3 ? "active" : ""} /></div>
 
@@ -38,10 +44,10 @@ export function CreateCampaignDialog({ draft, heroes, lore, protagonistId, compa
     {step === 3 && <div className="wizard-page review-page"><section className="review-card"><Sparkles size={22} /><div><span className="eyebrow">Campaign</span><h3>{draft.title}</h3><p>{draft.setting}</p><small>{draft.tone}</small></div></section>
       <section className="review-card"><Shield size={22} /><div><span className="eyebrow">Party</span><h3>{protagonist?.name ?? "Choose a protagonist"}</h3><p>{protagonist ? `${protagonist.ancestry} ${protagonist.character_class}` : "Return to the previous step to choose your hero."}</p><small>{companionIds.length ? `${companionIds.length} companion${companionIds.length === 1 ? "" : "s"}` : "Solo adventure"}</small></div></section>
       <section className="lore-review"><div className="picker-section-title"><BookOpen size={14} /> Optional campaign lore</div><p className="hint">Ready PDFs help the DM stay grounded in your setting.</p>
-        <div className="hero-picker-list compact">{lore.length === 0 && <p className="empty-note">No lore is indexed. You can add it later from the Lore Library.</p>}
+        <div className="hero-picker-list compact">{lore.length === 0 && <p className="empty-note">Index a PDF in the Lore Library to attach it to a new adventure.</p>}
           {lore.map((document) => { const selected = selectedLoreIds.includes(document.id); const ready = document.status === "ready"; return <button type="button" className={selected ? "hero-select selected" : "hero-select"} key={document.id} disabled={!ready} onClick={() => onToggleLore(document.id)} aria-pressed={selected}>
             <strong>{document.filename}</strong><span>{ready ? `${document.chunks} indexed passages` : document.status}</span>{selected && <CheckCircle2 size={17} />}</button>; })}</div></section>
-      {creating && <div className="creation-progress" role="status"><LoaderCircle className="spin" size={22} /><div><strong>Creating your world...</strong><span>The local DM is preparing the opening scene. This can take a moment.</span></div></div>}</div>}
+      {creating && <div className="creation-progress" role="status"><LoaderCircle className="spin" size={22} /><div><strong>Creating your world...</strong><span>Your opening scene will appear once the campaign is saved.</span></div></div>}</div>}
 
     <div className="modal-actions wizard-actions"><button type="button" className="secondary" disabled={creating} onClick={() => step === 1 ? onCancel() : setStep(step - 1)}>{step > 1 && <ArrowLeft size={16} />}{step === 1 ? "Cancel" : "Back"}</button>
       {step < 3 ? <button type="button" className="primary inline-primary" disabled={(step === 1 && !conceptValid) || (step === 2 && !protagonistId)} onClick={() => setStep(step + 1)}>Continue <ArrowRight size={16} /></button>

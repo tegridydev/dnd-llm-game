@@ -2,17 +2,22 @@ import {
   AlertTriangle, Archive, BookOpen, BrainCircuit, Check, Download, Menu,
   RefreshCw, ScrollText, Settings, Shield, UserRound, Users, X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Drawer } from "./components/Drawer";
 import { CampaignSidebar } from "./features/campaigns/CampaignSidebar";
-import { CreateCampaignDialog, type CampaignDraft } from "./features/campaigns/CreateCampaignDialog";
-import { HeroManager } from "./features/heroes/HeroManager";
-import { LorePanel } from "./features/lore/LorePanel";
+import type { CampaignDraft } from "./features/campaigns/CreateCampaignDialog";
 import { PlayScreen } from "./features/play/PlayScreen";
 import { useCampaignPlay } from "./hooks/useCampaignPlay";
 import { deleteJson, downloadJson, errorMessage, getJson, getStatusJson, patchJson, postJson, uploadFile } from "./lib/api";
-import type { Campaign, CampaignPayload, Health, Hero, HeroPayload, LoreDocument, ModelSettings } from "./types";
+import type { Campaign, CampaignPayload, Health, Hero, HeroPayload, LoreDocument } from "./types";
 import "./styles/app.css";
+
+const CreateCampaignDialog = lazy(() => import("./features/campaigns/CreateCampaignDialog")
+  .then((module) => ({ default: module.CreateCampaignDialog })));
+const HeroManager = lazy(() => import("./features/heroes/HeroManager").then((module) => ({ default: module.HeroManager })));
+const LorePanel = lazy(() => import("./features/lore/LorePanel").then((module) => ({ default: module.LorePanel })));
+const ModelSettingsPanel = lazy(() => import("./features/settings/ModelSettingsPanel")
+  .then((module) => ({ default: module.ModelSettingsPanel })));
 
 const DEFAULT_CAMPAIGN: CampaignDraft = {
   title: "The Shattered Gate",
@@ -20,7 +25,7 @@ const DEFAULT_CAMPAIGN: CampaignDraft = {
   tone: "tense heroic fantasy"
 };
 
-type DrawerName = "campaigns" | "heroes" | "lore" | "runtime" | "settings" | "party" | "journal";
+type DrawerName = "campaigns" | "library" | "heroes" | "lore" | "runtime" | "settings" | "party" | "journal";
 
 function savedCampaignId(): number | null {
   const value = window.localStorage.getItem("dndllm26.activeCampaign");
@@ -69,27 +74,31 @@ export default function App() {
     });
   }, []);
 
+  const refreshHealth = useCallback(async () => {
+    const status = await getStatusJson<Health>("/health/ready", [200, 503]);
+    setHealth(status);
+  }, []);
+  const refreshLoreRows = useCallback(async () => {
+    const rows = await getJson<LoreDocument[]>("/lore");
+    setLore(rows);
+    setSelectedLoreIds((current) => current.filter((id) =>
+      rows.some((document) => document.id === id && document.status === "ready")
+    ));
+  }, []);
+
   const refreshMetadata = useCallback(async () => {
     const results = await Promise.allSettled([
-      getStatusJson<Health>("/health/ready", [200, 503]), getJson<Hero[]>("/heroes"),
-      getJson<LoreDocument[]>("/lore")
+      refreshHealth(), getJson<Hero[]>("/heroes"), refreshLoreRows()
     ] as const);
-    const [status, heroRows, loreRows] = results;
-    if (status.status === "fulfilled") setHealth(status.value);
+    const heroRows = results[1];
     if (heroRows.status === "fulfilled") {
       setHeroes(heroRows.value);
       setProtagonistId((current) => current && heroRows.value.some((hero) => hero.id === current) ? current : null);
       setCompanionIds((current) => current.filter((id) => heroRows.value.some((hero) => hero.id === id)));
     }
-    if (loreRows.status === "fulfilled") {
-      setLore(loreRows.value);
-      setSelectedLoreIds((current) => current.filter((id) =>
-        loreRows.value.some((document) => document.id === id && document.status === "ready")
-      ));
-    }
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
-  }, []);
+  }, [refreshHealth, refreshLoreRows]);
 
   const refreshAll = useCallback(async () => {
     const results = await Promise.allSettled([refreshCampaigns(), refreshMetadata()]);
@@ -97,7 +106,7 @@ export default function App() {
     if (failure?.status === "rejected") throw failure.reason;
   }, [refreshCampaigns, refreshMetadata]);
 
-  const play = useCampaignPlay(activeId, refreshAll);
+  const play = useCampaignPlay(activeId, refreshCampaigns);
 
   useEffect(() => {
     if (
@@ -118,11 +127,17 @@ export default function App() {
     () => lore.some((document) => document.status === "queued" || document.status === "indexing"), [lore]
   );
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      refreshMetadata().catch((error: unknown) => setGlobalError(errorMessage(error)));
-    }, indexingActive ? 2500 : 20_000);
-    return () => window.clearInterval(interval);
-  }, [indexingActive, refreshMetadata]);
+    const heartbeat = window.setInterval(() => {
+      if (!document.hidden) void refreshHealth().catch(() => {});
+    }, 20_000);
+    const queue = indexingActive ? window.setInterval(() => {
+      if (!document.hidden) void refreshLoreRows().catch(() => {});
+    }, 2500) : undefined;
+    return () => {
+      window.clearInterval(heartbeat);
+      window.clearInterval(queue);
+    };
+  }, [indexingActive, refreshHealth, refreshLoreRows]);
   useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(null), 4000);
@@ -148,12 +163,12 @@ export default function App() {
     };
     try {
       const campaign = await postJson<Campaign>("/campaigns", payload);
-      await refreshAll();
+      setCampaigns((current) => [campaign, ...current]);
       setActiveId(campaign.id);
       setPendingOpeningId(campaign.id);
       setShowCampaignDialog(false);
       setProtagonistId(null); setCompanionIds([]); setSelectedLoreIds([]); setCampaignDraft(DEFAULT_CAMPAIGN);
-      setNotice("Adventure created. Preparing the opening scene...");
+      setNotice("Adventure created.");
     } catch (error) { setGlobalError(errorMessage(error)); }
     finally { setCreatingCampaign(false); }
   }
@@ -194,7 +209,7 @@ export default function App() {
       <a href="#main-play" className="skip-link">Skip to adventure</a>
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><Shield size={20} aria-hidden="true" /></span>
-          <div><strong>DNDLLM26</strong><small>Local AI Dungeon Master</small></div></div>
+          <div><strong>DNDLLM26</strong><small>Solo tabletop adventures</small></div></div>
         <button type="button" className="mobile-campaign-button" onClick={() => setDrawer("campaigns")}>
           <Menu size={18} aria-hidden="true" /><span>{activeCampaign?.title ?? "Campaigns"}</span>
         </button>
@@ -204,7 +219,7 @@ export default function App() {
           <button type="button" onClick={() => setDrawer("runtime")} className={`runtime-button ${health?.status ?? "loading"}`}>
             <BrainCircuit size={17} /><span>{runtimeLabel(health)}</span>
           </button>
-          <button type="button" className="icon-button" onClick={() => setDrawer("settings")} aria-label="Application settings"><Settings size={17} /></button>
+          <button type="button" className="icon-button settings-button" onClick={() => setDrawer("settings")} aria-label="Application settings"><Settings size={17} /></button>
         </div>
       </header>
 
@@ -217,7 +232,7 @@ export default function App() {
         <CampaignSidebar campaigns={campaigns} activeId={activeId} collapsed={railCollapsed}
           onSelect={(id) => { setActiveId(id); setDrawer(null); }} onCreate={() => setShowCampaignDialog(true)}
           onToggleCollapsed={toggleRail} onRestore={(id) => void updateCampaign(id, { archived: false })} />
-        <PlayScreen detail={play.detail} state={initializing && !activeId ? { ...play.state, phase: "loading", statusMessage: "Loading your adventures..." } : play.state} onSetAction={play.setAction}
+        <PlayScreen detail={play.detail?.campaign.id === activeId ? play.detail : null} state={initializing && !activeId ? { ...play.state, phase: "loading", statusMessage: "Loading your adventures..." } : play.state} onSetAction={play.setAction}
           onSubmitAction={play.submitAction} onSubmitCombatAction={play.submitCombatAction}
           onResolvePendingRoll={play.resolvePendingRoll} onRetry={play.retry} onCancel={play.cancel}
           onGenerateOpening={() => play.generateOpening()}
@@ -226,14 +241,15 @@ export default function App() {
           onOpenParty={() => setDrawer("party")} onOpenJournal={() => setDrawer("journal")}
           utilityDrawer={drawer === "party" || drawer === "journal" ? drawer : null}
           onCloseUtilityDrawer={() => setDrawer(null)} mutationPending={play.mutationPending}
-          maxActionChars={health?.request_max_chars ?? 2000} />
+          maxActionChars={health?.request_max_chars ?? 2000}
+          onOpenSettings={() => setDrawer("settings")} />
       </main>
 
       <nav className="mobile-nav" aria-label="Primary navigation">
         <button type="button" onClick={() => setDrawer("campaigns")}><ScrollText size={18} /><span>Campaigns</span></button>
         <button type="button" onClick={() => setDrawer("party")} disabled={!activeCampaign}><Users size={18} /><span>Party</span></button>
         <button type="button" onClick={() => setDrawer("journal")} disabled={!activeCampaign}><BookOpen size={18} /><span>Journal</span></button>
-        <button type="button" onClick={() => setDrawer("heroes")}><UserRound size={18} /><span>Library</span></button>
+        <button type="button" onClick={() => setDrawer("library")}><BookOpen size={18} /><span>Library</span></button>
       </nav>
 
       {drawer === "campaigns" && <Drawer title="Campaigns" eyebrow="Adventure Library" side="left" onClose={() => setDrawer(null)}>
@@ -241,6 +257,13 @@ export default function App() {
           onSelect={(id) => { setActiveId(id); setDrawer(null); }} onCreate={() => { setDrawer(null); setShowCampaignDialog(true); }}
           onToggleCollapsed={() => undefined} onRestore={(id) => void updateCampaign(id, { archived: false })} />
       </Drawer>}
+      {drawer === "library" && <Drawer title="Library" onClose={() => setDrawer(null)}>
+        <div className="library-actions">
+          <button type="button" className="secondary" onClick={() => setDrawer("heroes")}><UserRound size={18} /> Heroes</button>
+          <button type="button" className="secondary" onClick={() => setDrawer("lore")}><BookOpen size={18} /> Lore PDFs</button>
+        </div>
+      </Drawer>}
+      <Suspense fallback={<div className="toast" role="status">Opening panel…</div>}>
       {drawer === "heroes" && <Drawer title="Hero Library" eyebrow="Reusable Characters" onClose={() => setDrawer(null)}><HeroManager heroes={heroes} onCreate={createHero} onUpdate={updateHero} onDelete={deleteHero} /></Drawer>}
       {drawer === "lore" && <Drawer title="Lore Library" eyebrow="Campaign Sources" onClose={() => setDrawer(null)}><LorePanel lore={lore} worker={health?.worker ?? null} onRefresh={refreshLore} onUpload={uploadLore} onDelete={deleteLore} /></Drawer>}
       {drawer === "runtime" && <Drawer title="Local Runtime" eyebrow="System Status" onClose={() => setDrawer(null)}><RuntimeDetails health={health} onRefresh={refreshMetadata} /></Drawer>}
@@ -259,6 +282,7 @@ export default function App() {
         onToggleCompanion={(id) => setCompanionIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])}
         onToggleLore={(id) => setSelectedLoreIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])}
         onCancel={() => setShowCampaignDialog(false)} onConfirm={() => void createCampaign()} />}
+      </Suspense>
     </div>
   );
 }
@@ -266,17 +290,18 @@ export default function App() {
 function runtimeLabel(health: Health | null): string {
   if (!health) return "Connecting";
   if (health.model_runtime.narrator.status === "failed") return "Narrator needs attention";
-  if (health.status === "error" || health.ollama.status !== "ok") return "Runtime degraded";
-  return health.model_runtime.narrator.status === "healthy" ? "Local AI ready" : "Local AI available";
+  if (health.status === "error") return "Runtime unavailable";
+  if (!health.chat_model || health.connection.status !== "ok") return "Check model";
+  return health.provider.remote ? health.provider.label + " · Hosted" : "Local model ready";
 }
 
 function RuntimeDetails({ health, onRefresh }: { health: Health | null; onRefresh: () => Promise<void> }) {
   const worker = health?.worker;
-  const components = health ? [["Database", health.database], ["Storage", health.filesystem], ["Ollama", health.ollama], ["Lore worker", health.worker]] as const : [];
+  const components = health ? [["Database", health.database], ["Storage", health.filesystem], [health.provider.label, health.connection], ["Lore worker", health.worker]] as const : [];
   return <div className="runtime-details"><div className={`runtime-summary ${health?.status ?? "loading"}`}><BrainCircuit size={24} /><div>
-    <strong>{health?.status === "ok" ? "Everything is ready" : health ? "Some services need attention" : "Checking local services"}</strong><span>Your campaign data remains on this machine.</span></div></div>
+    <strong>{health?.status === "ok" ? "Everything is ready" : health ? "Some services need attention" : "Checking local services"}</strong><span>{health?.provider.remote ? "Hosted inference is enabled." : "Campaigns are stored on this device."}</span></div></div>
     {components.map(([label, component]) => <article className="runtime-component" key={label}><span className={`status-dot ${component.status}`} /><div><strong>{label}</strong><span>{component.detail ?? component.status}</span></div><b>{component.status}</b></article>)}
-    {health && Object.entries(health.model_runtime).map(([role, component]) => <article className="runtime-component" key={role}><span className={`status-dot ${component.status}`} /><div><strong>{role === "narrator" ? "Narrator generation" : role === "utility" ? "Rules and memory" : "Lore embeddings"}</strong><span>{component.detail ?? (component.status === "unverified" ? "Installed; not exercised in this session" : component.status)}</span></div><b>{component.status}</b></article>)}
+    {health && Object.entries(health.model_runtime).map(([role, component]) => <article className="runtime-component" key={role}><span className={`status-dot ${component.status}`} /><div><strong>{role === "narrator" ? "Narrator generation" : role === "utility" ? "Rules and memory" : "Lore embeddings"}</strong><span>{component.detail ?? (component.status === "unverified" ? "Waiting for first use" : component.status)}</span></div><b>{component.status}</b></article>)}
     {health && <dl className="model-list"><dt>Dungeon Master</dt><dd>{health.chat_model}</dd><dt>Rules utility</dt><dd>{health.utility_model}</dd><dt>Embeddings</dt><dd>{health.embed_model}</dd></dl>}
     <div className="worker-note"><span className={`status-dot ${worker?.running ? "ok" : "error"}`} />{worker?.running ? worker.active_document_id ? `Indexing lore document ${worker.active_document_id}` : `${worker.queued_count} lore documents queued` : "Lore indexer unavailable"}</div>
     <button type="button" className="secondary" onClick={() => void onRefresh()}><RefreshCw size={16} />Refresh status</button></div>;
@@ -302,55 +327,8 @@ function ApplicationSettings({ campaign, onModelsSaved, onError, onRename, onArc
   onArchive?: () => Promise<void>;
   onExport?: () => Promise<void>;
 }) {
-  const [saved, setSaved] = useState<ModelSettings | null>(null);
-  const [draft, setDraft] = useState<ModelSettings | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [confirmReindex, setConfirmReindex] = useState(false);
-  useEffect(() => {
-    getJson<ModelSettings>("/settings/models")
-      .then((value) => { setSaved(value); setDraft(value); })
-      .catch(onError)
-      .finally(() => setLoading(false));
-  }, []); // Settings load once per drawer mount.
-  const dirty = Boolean(saved && draft && ["chat_model", "utility_model", "embed_model", "narration_style"]
-    .some((key) => saved[key as keyof ModelSettings] !== draft[key as keyof ModelSettings]));
-  const embedChanged = Boolean(saved && draft && saved.embed_model !== draft.embed_model);
-  const completion = draft?.models.filter((model) => model.capabilities.includes("completion")) ?? [];
-  const embeddings = draft?.models.filter((model) => model.capabilities.includes("embedding")) ?? [];
-  async function save(confirm = false) {
-    if (!draft || !dirty || saving) return;
-    if (embedChanged && draft.lore_document_count > 0 && !confirm) { setConfirmReindex(true); return; }
-    setSaving(true);
-    try {
-      const value = await patchJson<ModelSettings>("/settings/models", {
-        chat_model: draft.chat_model, utility_model: draft.utility_model,
-        embed_model: draft.embed_model, narration_style: draft.narration_style,
-        confirm_lore_reindex: confirm
-      });
-      setSaved(value); setDraft(value); setConfirmReindex(false);
-      await onModelsSaved(value.reindex_queued ? `${value.reindex_queued} lore documents queued for reindexing.` : "AI settings saved.");
-    } catch (error) { onError(error); }
-    finally { setSaving(false); }
-  }
-  function options(models: { name: string }[], current: string) {
-    const available = models.some((model) => model.name === current);
-    return <>{!available && <option value={current}>{current} (unavailable)</option>}
-      {models.map((model) => <option value={model.name} key={model.name}>{model.name}</option>)}</>;
-  }
   return <div className="settings-stack">
-    <section className="settings-section"><div><span className="eyebrow">Local AI</span><h3>Model roles</h3><p>Installed, compatible Ollama models only. Changes apply from the next turn.</p></div>
-      {loading && <span className="hint">Loading installed models...</span>}
-      {!loading && draft && <div className="model-settings-grid">
-        <div className="model-role-health" role="status">Narrator: <strong>{draft.model_runtime.narrator.status}</strong>{draft.model_runtime.narrator.detail && <span>{draft.model_runtime.narrator.detail}</span>}</div>
-        <label><span>Dungeon Master</span><small>Writes scenes and resolves outcomes.</small><select value={draft.chat_model} onChange={(event) => setDraft({ ...draft, chat_model: event.target.value })}>{options(completion, draft.chat_model)}</select></label>
-        <label><span>Rules and memory</span><small>Classifies actions and maintains world state.</small><select value={draft.utility_model} onChange={(event) => setDraft({ ...draft, utility_model: event.target.value })}>{options(completion, draft.utility_model)}</select></label>
-        <label><span>Embeddings</span><small>Searches indexed campaign lore.</small><select value={draft.embed_model} onChange={(event) => { setConfirmReindex(false); setDraft({ ...draft, embed_model: event.target.value }); }}>{options(embeddings, draft.embed_model)}</select></label>
-        <fieldset><legend>Narration style</legend><div className="style-options">{(["focused", "balanced", "cinematic"] as const).map((style) => <label key={style}><input type="radio" name="narration-style" checked={draft.narration_style === style} onChange={() => setDraft({ ...draft, narration_style: style })} /><span>{style}</span></label>)}</div><small>Balanced adapts normal turns to roughly 90–160 words.</small></fieldset>
-      </div>}
-      {confirmReindex && draft && <div className="reindex-warning" role="alert"><AlertTriangle size={18} /><div><strong>Reindex {draft.lore_document_count} lore documents?</strong><p>Lore search will be temporarily unavailable while compatible indexes are rebuilt.</p></div><div className="confirm-actions"><button className="secondary" type="button" onClick={() => setConfirmReindex(false)}>Cancel</button><button className="primary" type="button" onClick={() => void save(true)}>Save and reindex</button></div></div>}
-      <button type="button" className="primary" disabled={!dirty || saving || confirmReindex} onClick={() => void save()}>{saving ? "Saving..." : "Save AI settings"}</button>
-    </section>
+    <ModelSettingsPanel onSaved={(message) => void onModelsSaved(message).catch(onError)} />
     {campaign && onRename && onArchive && onExport && <><div className="settings-divider" /><section><span className="eyebrow">Current adventure</span><h3>{campaign.title}</h3></section><CampaignSettings key={campaign.id} campaign={campaign} onRename={onRename} onArchive={onArchive} onExport={onExport} /></>}
   </div>;
 }

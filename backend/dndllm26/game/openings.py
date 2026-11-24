@@ -6,8 +6,9 @@ import json
 
 from sqlmodel import Session, select
 
+from dndllm26.game.lifecycle import playable_campaign
 from dndllm26.core.errors import ConflictError, NotFoundError, OperationInProgressError
-from dndllm26.db.models import Campaign, CampaignOpening, Turn, now_utc
+from dndllm26.db.models import CampaignOpening, Turn, now_utc
 from dndllm26.game.campaigns import (
     add_event,
     build_campaign_context,
@@ -41,8 +42,7 @@ def prepare_opening(
     prompt_history_limit: int = 14,
     stale_seconds: int = 900,
 ) -> OpeningPreparation:
-    if not session.get(Campaign, campaign_id):
-        raise NotFoundError("Campaign not found.")
+    playable_campaign(session, campaign_id)
     opening = session.exec(
         select(CampaignOpening).where(CampaignOpening.campaign_id == campaign_id)
     ).first()

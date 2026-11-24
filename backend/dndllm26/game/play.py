@@ -8,10 +8,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from dndllm26.game.lifecycle import playable_campaign
 from dndllm26.core.errors import ConflictError, NotFoundError, OperationInProgressError
 from dndllm26.db.models import (
     ActionRequest,
-    Campaign,
     CampaignOpening,
     Character,
     DiceRoll,
@@ -116,9 +116,7 @@ def prepare_action(
     prompt_history_limit: int = 14,
     stale_seconds: int = 900,
 ) -> ActionPreparation:
-    campaign = session.get(Campaign, campaign_id)
-    if not campaign:
-        raise NotFoundError("Campaign not found.")
+    playable_campaign(session, campaign_id)
     opening = session.exec(
         select(CampaignOpening).where(CampaignOpening.campaign_id == campaign_id)
     ).first()
@@ -456,9 +454,7 @@ def prepare_roll_resolution(
     stale_seconds: int = 900,
     random_source: RandomSource | None = None,
 ) -> RollPreparation:
-    campaign = session.get(Campaign, campaign_id)
-    if not campaign:
-        raise NotFoundError("Campaign not found.")
+    playable_campaign(session, campaign_id)
     pending = session.get(PendingRoll, pending_roll_id)
     if not pending or pending.campaign_id != campaign_id:
         raise NotFoundError("Pending roll not found.")

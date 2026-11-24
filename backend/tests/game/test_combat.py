@@ -299,3 +299,15 @@ def test_encounter_resolves_enemies_ahead_of_hero_in_initiative(engine, monkeypa
         assert detail is not None
         assert detail["current_combatant_id"] == detail["protagonist_combatant_id"]
         assert opening_events
+
+
+def test_explicit_enemy_is_not_replaced_by_unrelated_scene_npc() -> None:
+    assessment = assess_combat(
+        "I attack the goblin.",
+        known_npcs=("Lantern keeper",),
+        context_text="The lantern keeper sits near the gate.",
+        model_enemy_keys=("goblin",),
+        model_names=("Goblin",),
+    )
+    assert assessment.enemy_keys == ("goblin",)
+    assert assessment.display_names == ("Goblin",)

@@ -111,8 +111,11 @@ export function useCampaignPlay(
   );
 
   useEffect(() => {
-    streamController.current?.abort();
+    const previous = streamController.current;
+    streamController.current = null;
+    previous?.abort();
     operationVersion.current += 1;
+    setMutationPending(null);
     const draft = campaignId ? window.localStorage.getItem(`dndllm26.actionDraft.${campaignId}`) ?? "" : "";
     dispatch({ type: "reset", hasCampaign: campaignId !== null, draft });
     setDetail(null);
@@ -123,7 +126,7 @@ export function useCampaignPlay(
         dispatch({ type: "load_failed", message: errorMessage(error) });
       }
     });
-    return () => controller.abort();
+    return () => { controller.abort(); streamController.current?.abort(); };
   }, [campaignId, refreshDetail]);
 
   const applyChoiceUpdate = useCallback((update: ChoiceUpdate) => {
@@ -210,8 +213,7 @@ export function useCampaignPlay(
   const runOperation = useCallback(
     async (operation: RetryOperation, optimistic: boolean) => {
       const targetId = operation.campaignId;
-      if (activeCampaign.current !== targetId) return;
-      streamController.current?.abort();
+      if (activeCampaign.current !== targetId || streamController.current) return;
       const controller = new AbortController();
       streamController.current = controller;
       const version = ++operationVersion.current;
@@ -229,6 +231,16 @@ export function useCampaignPlay(
       }
 
       const completion: { status?: StreamDone["status"] } = {};
+      let pendingText = "";
+      let frame = 0;
+      function flushText() {
+        window.cancelAnimationFrame(frame);
+        frame = 0;
+        if (pendingText && version === operationVersion.current && activeCampaign.current === targetId) {
+          dispatch({ type: "append_draft", content: pendingText });
+        }
+        pendingText = "";
+      }
       try {
         const path = operation.kind === "action"
           ? `/campaigns/${targetId}/actions/stream`
@@ -250,6 +262,12 @@ export function useCampaignPlay(
           expectedCampaignId: targetId,
           onEvent: (event) => {
             if (version !== operationVersion.current || activeCampaign.current !== targetId) return;
+            if (event.name === "narration_delta") {
+              pendingText += event.envelope.data.content;
+              if (!frame) frame = window.requestAnimationFrame(flushText);
+              return;
+            }
+            flushText();
             handleEvent(event, targetId);
             if (event.name === "done") completion.status = event.envelope.data.status;
           }
@@ -258,26 +276,37 @@ export function useCampaignPlay(
         if (!completion.status) {
           throw new Error("The server stream ended without a completion state.");
         }
-        await refreshDetail(targetId);
+        try {
+          await refreshDetail(targetId, controller.signal);
+        } catch {
+          if (version === operationVersion.current) {
+            dispatch({ type: "operation_done", status: completion.status });
+            dispatch({ type: "operation_error", message: "Could not refresh the saved scene. Reload this campaign to continue.", retryable: false });
+          }
+          return;
+        }
+        if (version !== operationVersion.current || activeCampaign.current !== targetId) return;
         dispatch({ type: "operation_done", status: completion.status });
-        await onOperationSettled?.();
+        void Promise.resolve(onOperationSettled?.()).catch(() => {});
       } catch (error: unknown) {
         if (version !== operationVersion.current || activeCampaign.current !== targetId) return;
         if (isAbortError(error)) {
           dispatch({ type: "cancelled" });
           return;
         }
-        dispatch({
-          type: "operation_error",
-          message: errorMessage(error),
-          retryable: error instanceof ApiError ? error.retryable : true
-        });
-        try {
-          await refreshDetail(targetId);
-        } catch {
-          // Preserve the primary stream failure; the explicit retry remains available.
+        const retryable = error instanceof ApiError ? error.retryable : true;
+        if (!retryable) {
+          try { await refreshDetail(targetId, controller.signal); } catch { /* Keep the request error. */ }
+          if (version !== operationVersion.current || activeCampaign.current !== targetId) return;
+          if (optimistic && operation.kind === "action") {
+            dispatch({ type: "set_action", value: operation.content });
+            window.localStorage.setItem(`dndllm26.actionDraft.${targetId}`, operation.content);
+          }
         }
+        dispatch({ type: "operation_error", message: errorMessage(error), retryable });
+        dispatch({ type: "operation_done", status: "failed" });
       } finally {
+        window.cancelAnimationFrame(frame);
         if (streamController.current === controller) streamController.current = null;
       }
     },
@@ -358,11 +387,12 @@ export function useCampaignPlay(
         `/campaigns/${campaignId}?cursor=${encodeURIComponent(detail.turn_page.next_cursor)}&limit=${detail.turn_page.limit}`
       );
       if (activeCampaign.current !== campaignId) return;
-      setDetail((current) => current ? {
-        ...current,
-        turns: [...older.turns, ...current.turns],
-        turn_page: older.turn_page
-      } : current);
+      setDetail((current) => {
+        if (current?.campaign.id !== campaignId) return current;
+        const present = new Set(current.turns.map((turn) => turn.id));
+        return { ...current, turns: [...older.turns.filter((turn) => !present.has(turn.id)), ...current.turns],
+          turn_page: older.turn_page };
+      });
     } catch (error: unknown) {
       dispatch({ type: "operation_error", message: errorMessage(error), retryable: false });
     } finally {

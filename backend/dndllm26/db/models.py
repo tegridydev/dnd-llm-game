@@ -58,6 +58,22 @@ class RuntimePreference(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=now_utc)
 
 
+class ModelProfilePreference(SQLModel, table=True):
+    __table_args__ = (
+        CheckConstraint(
+            "narration_style IN ('focused', 'balanced', 'cinematic')",
+            name="ck_model_profile_narration_style",
+        ),
+    )
+
+    id: str = Field(primary_key=True, max_length=64)
+    chat_model: str = Field(max_length=160)
+    utility_model: str = Field(max_length=160)
+    embed_model: str = Field(max_length=160)
+    narration_style: str = Field(default="balanced", max_length=20)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
 class Character(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("role IN ('protagonist', 'companion')", name="ck_character_role"),

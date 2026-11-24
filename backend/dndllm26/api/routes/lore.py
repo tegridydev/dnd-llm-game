@@ -10,7 +10,7 @@ from dndllm26.core.errors import ConflictError, ValidationError
 from dndllm26.core.resources import AppResources
 from dndllm26.db.models import LoreDocument, now_utc
 from dndllm26.rag.deletion import finalize_lore_deletion
-from dndllm26.rag.uploads import store_pdf_upload
+from dndllm26.rag.uploads import managed_pdf_path, store_pdf_upload
 
 router = APIRouter(prefix="/lore", tags=["lore"])
 
@@ -47,8 +47,10 @@ async def upload_lore(
             stored.path.unlink(missing_ok=True)
             raise ConflictError("An identical lore document is currently being deleted.")
         if existing.status == "error":
-            existing_path = resources.settings.resolved_upload_dir / existing.storage_name
-            if not existing_path.is_file():
+            existing_path = managed_pdf_path(resources.settings, existing.storage_name)
+            if existing_path is None:
+                existing.storage_name = stored.storage_name
+            elif not existing_path.is_file():
                 stored.path.replace(existing_path)
             else:
                 stored.path.unlink(missing_ok=True)
@@ -91,7 +93,11 @@ async def upload_lore(
         stored.path.unlink(missing_ok=True)
         raise
     if document.id is not None and not resources.lore_worker.enqueue(document.id):
-        document.error = "Index queue is currently full. Use Refresh Index to retry."
+        document.error = (
+            "Choose a lore embedding model in Settings to resume indexing."
+            if not resources.rag.enabled
+            else "Waiting for a slot in the indexing queue."
+        )
         document.updated_at = now_utc()
         session.add(document)
         session.commit()
@@ -100,7 +106,7 @@ async def upload_lore(
 
 
 @router.post("/refresh-index")
-def refresh_lore_index(
+async def refresh_lore_index(
     force: bool = False,
     resources: AppResources = Depends(get_resources),
     session: Session = Depends(get_session),

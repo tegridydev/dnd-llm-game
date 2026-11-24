@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
@@ -10,7 +9,8 @@ from sqlmodel import Session
 
 from dndllm26.api.deps import get_resources, get_session
 from dndllm26.api.schemas import HealthComponent, HealthOut, WorkerHealthOut
-from dndllm26.core.errors import ModelUnavailableError
+from dndllm26.core.errors import AppError
+from dndllm26.api.routes.settings import provider_info
 from dndllm26.core.resources import AppResources
 
 router = APIRouter(tags=["health"])
@@ -36,7 +36,7 @@ async def _health_payload(resources: AppResources, session: Session) -> HealthOu
             if resources.settings.database_path
             else resources.settings.resolved_upload_dir,
             resources.settings.resolved_upload_dir,
-            resources.settings.resolved_lancedb_dir,
+            resources.settings.resolved_lore_index_dir,
         ]
     )
     worker = WorkerHealthOut(
@@ -49,41 +49,37 @@ async def _health_payload(resources: AppResources, session: Session) -> HealthOu
         active_document_id=resources.lore_worker.active_document_id,
         queued_count=resources.lore_worker.queued_count,
     )
-    models: list[str] = []
+    service = resources.models
     try:
-        models = await asyncio.wait_for(
-            resources.ollama.list_models(),
-            timeout=resources.settings.ollama_health_timeout_seconds,
+        models = await service.list_models()
+        missing = service.endpoint.name == "ollama" and service.chat_model not in models
+        connection = HealthComponent(
+            status="degraded" if missing or not service.chat_model else "ok",
+            detail=(
+                "Choose a Dungeon Master model in Settings."
+                if not service.chat_model
+                else f"Model is missing: {service.chat_model}"
+                if missing
+                else None
+            ),
         )
-        configured = {
-            resources.ollama.chat_model,
-            resources.ollama.utility_model,
-            resources.ollama.embed_model,
-        }
-        missing = sorted(model for model in configured if model not in models)
-        ollama = HealthComponent(
-            status="degraded" if missing else "ok",
-            detail=("Missing configured models: " + ", ".join(missing)) if missing else None,
-        )
-    except (TimeoutError, ModelUnavailableError) as exc:
-        ollama = HealthComponent(status="degraded", detail=str(exc)[:300])
-
+    except AppError as exc:
+        connection = HealthComponent(status="degraded", detail=exc.message)
     core_error = any(component.status == "error" for component in (database, filesystem, worker))
-    degraded = ollama.status != "ok"
-    model_runtime = resources.ollama.runtime_status()
-    runtime_failed = any(item["status"] == "failed" for item in model_runtime.values())
-    degraded = degraded or runtime_failed
+    model_runtime = service.runtime_status()
+    degraded = connection.status != "ok" or model_runtime["narrator"]["status"] == "failed"
     status = "error" if core_error else "degraded" if degraded else "ok"
     return HealthOut(
         status=status,
         database=database,
         filesystem=filesystem,
         worker=worker,
-        ollama=ollama,
+        connection=connection,
+        provider=provider_info(service),
         model_runtime=model_runtime,
-        chat_model=resources.ollama.chat_model,
-        utility_model=resources.ollama.utility_model,
-        embed_model=resources.ollama.embed_model,
+        chat_model=resources.models.chat_model,
+        utility_model=resources.models.utility_model,
+        embed_model=resources.models.embed_model,
         request_max_chars=resources.settings.request_max_chars,
     )
 

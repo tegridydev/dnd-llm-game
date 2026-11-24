@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from array import array
 import asyncio
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-import hashlib
-from typing import Any, Sequence
+from hashlib import sha256
+from heapq import nlargest
+import math
+import sqlite3
+import sys
 from uuid import uuid4
 
-import lancedb
-
+from dndllm26.core.errors import LoreProcessingError
 from dndllm26.core.settings import Settings
-from dndllm26.llm.ollama_client import OllamaService
+from dndllm26.llm.client import ModelService
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,63 +35,68 @@ class IndexResult:
     table_name: str
 
 
-def _escape_filter_string(value: str) -> str:
-    return value.replace("'", "''")
+def _unit(vector: Sequence[float]) -> array:
+    magnitude = math.hypot(*vector)
+    if not math.isfinite(magnitude) or magnitude <= 0:
+        raise LoreProcessingError("The embedding model returned a zero or invalid vector.")
+    return array("f", (value / magnitude for value in vector))
 
 
-def _table_name(model: str, dimension: int) -> str:
-    fingerprint = hashlib.sha256(model.encode("utf-8")).hexdigest()[:12]
-    return f"lore_v1_{fingerprint}_{dimension}"
+def _little_endian_vector(vector: array) -> array:
+    if sys.byteorder != "little":
+        vector.byteswap()
+    return vector
 
 
 class RagStore:
-    """LanceDB adapter with logically atomic, versioned document replacement."""
+    """SQLite index for bounded, exact cosine retrieval over campaign lore."""
 
-    def __init__(self, settings: Settings, ollama: OllamaService) -> None:
-        self._db_path = settings.resolved_lancedb_dir
-        self._ollama = ollama
-        self._db_instance: Any | None = None
-        self._lock = asyncio.Lock()
+    def __init__(self, settings: Settings, models: ModelService) -> None:
+        self._path = settings.resolved_lore_index_dir / "lore.sqlite3"
+        self._models = models
 
     @property
     def embed_model(self) -> str:
-        return self._ollama.embed_model
+        return self._models.embed_model
 
-    def _connect_sync(self) -> Any:
-        if self._db_instance is None:
-            self._db_instance = lancedb.connect(str(self._db_path))
-        return self._db_instance
+    @property
+    def table_name(self) -> str:
+        identity = f"{self._models.embedding_identity}\0{self.embed_model}"
+        return "sqlite_v1_" + sha256(identity.encode()).hexdigest()[:16]
 
-    def _table_names_sync(self) -> list[str]:
-        db = self._connect_sync()
-        names = db.table_names()
-        return list(names) if not isinstance(names, list) else names
+    @property
+    def enabled(self) -> bool:
+        return bool(self._models.embedding_identity and self.embed_model)
 
-    def _add_rows_sync(self, table_name: str, rows: list[dict[str, Any]]) -> None:
-        db = self._connect_sync()
-        if table_name not in self._table_names_sync():
-            db.create_table(table_name, data=rows)
-            return
-        table = db.open_table(table_name)
-        table.add(rows)
+    @contextmanager
+    def _database(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self._path, timeout=5)
+        try:
+            if write:
+                with conn:
+                    conn.execute(
+                        """CREATE TABLE IF NOT EXISTS lore_passages (
+                            index_key TEXT NOT NULL,
+                            chunk_index INTEGER NOT NULL,
+                            document_id INTEGER NOT NULL,
+                            filename TEXT NOT NULL,
+                            passage TEXT NOT NULL,
+                            vector BLOB NOT NULL,
+                            PRIMARY KEY (index_key, chunk_index)
+                        ) WITHOUT ROWID"""
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS lore_by_document ON lore_passages (document_id)"
+                    )
+                    yield conn
+            else:
+                yield conn
+        finally:
+            conn.close()
 
-    def _delete_index_sync(self, table_name: str, index_key: str) -> None:
-        db = self._connect_sync()
-        if table_name not in self._table_names_sync():
-            return
-        table = db.open_table(table_name)
-        table.delete(f"index_key = '{_escape_filter_string(index_key)}'")
-
-    def _cleanup_document_sync(self, document_id: int, active_index_key: str | None) -> None:
-        db = self._connect_sync()
-        for table_name in self._table_names_sync():
-            if not table_name.startswith("lore_v1_"):
-                continue
-            table = db.open_table(table_name)
-            expression = f"document_id = {int(document_id)}"
-            if active_index_key:
-                expression += f" AND index_key != '{_escape_filter_string(active_index_key)}'"
-            table.delete(expression)
+    def _add_rows(self, rows: list[tuple]) -> None:
+        with self._database(write=True) as conn:
+            conn.executemany("INSERT INTO lore_passages VALUES (?, ?, ?, ?, ?, ?)", rows)
 
     async def index_chunks(
         self,
@@ -98,126 +108,111 @@ class RagStore:
         batch_size: int,
         index_version: int,
     ) -> IndexResult:
-        vectors: list[list[float]] = []
+        index_key = f"{document_id}:{content_sha256}:{index_version}:{uuid4().hex}"
+        table_name = self.table_name
+        rows: list[tuple] = []
+        dimension = 0
         for start in range(0, len(chunks), batch_size):
-            vectors.extend(await self._ollama.embed_batch(chunks[start : start + batch_size]))
-        if not vectors:
-            raise ValueError("No embeddings were produced for the document.")
-        dimension = len(vectors[0])
-        table_name = _table_name(self._ollama.embed_model, dimension)
-        model_key = hashlib.sha256(self._ollama.embed_model.encode()).hexdigest()[:12]
-        index_key = f"{document_id}:{content_sha256}:{model_key}:{index_version}:{uuid4().hex}"
-        rows = [
-            {
-                "vector": vector,
-                "document_id": int(document_id),
-                "filename": filename,
-                "chunk_index": index,
-                "text": chunks[index],
-                "index_key": index_key,
-                "embed_model": self._ollama.embed_model,
-                "content_sha256": content_sha256,
-            }
-            for index, vector in enumerate(vectors)
-        ]
+            passages = chunks[start : start + batch_size]
+            vectors = await self._models.embed_batch(passages)
+            for number, (text, vector) in enumerate(zip(passages, vectors, strict=True), start):
+                dimension = dimension or len(vector)
+                if len(vector) != dimension:
+                    raise LoreProcessingError(
+                        "The embedding model changed vector dimensions during indexing."
+                    )
+                packed = _little_endian_vector(_unit(vector)).tobytes()
+                rows.append((index_key, number, document_id, filename, text, packed))
+        if not rows:
+            raise LoreProcessingError("No embeddings were produced for this document.")
+
+        # Make cancellation wait for the transaction before disposing of inactive rows.
+        write = asyncio.create_task(asyncio.to_thread(self._add_rows, rows))
         try:
-            async with self._lock:
-                await asyncio.to_thread(self._add_rows_sync, table_name, rows)
-        except Exception:
-            async with self._lock:
-                await asyncio.to_thread(self._delete_index_sync, table_name, index_key)
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            try:
+                await write
+            finally:
+                await self.delete_index(table_name=table_name, index_key=index_key)
             raise
-        return IndexResult(
-            chunks=len(rows),
-            dimension=dimension,
-            index_key=index_key,
-            table_name=table_name,
-        )
+        return IndexResult(len(rows), dimension, index_key, table_name)
+
+    def _delete(self, condition: str, values: tuple) -> None:
+        if self._path.exists():
+            with self._database(write=True) as conn:
+                conn.execute("DELETE FROM lore_passages WHERE " + condition, values)
 
     async def delete_index(self, *, table_name: str, index_key: str) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._delete_index_sync, table_name, index_key)
+        if table_name.startswith("sqlite_v1_"):
+            await asyncio.to_thread(self._delete, "index_key = ?", (index_key,))
 
-    async def cleanup_stale(
-        self,
-        *,
-        document_id: int,
-        active_index_key: str,
-    ) -> None:
-        async with self._lock:
-            await asyncio.to_thread(
-                self._cleanup_document_sync,
-                document_id,
-                active_index_key,
-            )
+    async def cleanup_stale(self, *, document_id: int, active_index_key: str) -> None:
+        await asyncio.to_thread(
+            self._delete, "document_id = ? AND index_key != ?", (document_id, active_index_key)
+        )
 
     async def delete_document(self, document_id: int) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._cleanup_document_sync, document_id, None)
+        await asyncio.to_thread(self._delete, "document_id = ?", (document_id,))
 
-    def _search_table_sync(
-        self,
-        table_name: str,
-        vector: list[float],
-        index_keys: Sequence[str],
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        db = self._connect_sync()
-        if table_name not in self._table_names_sync():
+    def _search(self, vector: array, keys: list[str], limit: int) -> list[dict]:
+        per_document = max(1, 8192 // len(keys))
+        sumprod = getattr(
+            math, "sumprod", lambda a, b: sum(x * y for x, y in zip(a, b, strict=True))
+        )
+        if not self._path.exists():
             return []
-        table = db.open_table(table_name)
-        quoted = ", ".join(f"'{_escape_filter_string(key)}'" for key in index_keys)
-        query = table.search(vector)
-        if quoted:
-            expression = f"index_key IN ({quoted})"
-            try:
-                query = query.where(expression, prefilter=True)
-            except TypeError:  # Compatibility with older supported LanceDB query signatures.
-                query = query.where(expression)
-        return list(query.limit(limit).to_list())
+        with self._database() as conn:
+            conn.execute("BEGIN")
+
+            def scores():
+                for key in keys:
+                    for index, raw in conn.execute(
+                        "SELECT chunk_index, vector FROM lore_passages "
+                        "WHERE index_key = ? ORDER BY chunk_index LIMIT ?",
+                        (key, per_document),
+                    ):
+                        if len(raw) != len(vector) * vector.itemsize:
+                            continue
+                        candidate = array("f")
+                        candidate.frombytes(raw)
+                        _little_endian_vector(candidate)
+                        yield sumprod(vector, candidate), key, index
+
+            results = []
+            for score, key, index in nlargest(limit, scores()):
+                document_id, filename, text = conn.execute(
+                    """SELECT document_id, filename, passage FROM lore_passages
+                    WHERE index_key = ? AND chunk_index = ?""",
+                    (key, index),
+                ).fetchone()
+                results.append(
+                    {
+                        "document_id": document_id,
+                        "filename": filename,
+                        "chunk_index": index,
+                        "text": text,
+                        "score": max(0.0, 1 - score),
+                    }
+                )
+            return results
 
     async def search(
-        self,
-        query: str,
-        *,
-        limit: int,
-        documents: Sequence[LoreReference],
-    ) -> list[dict[str, Any]]:
+        self, query: str, *, limit: int, documents: Sequence[LoreReference]
+    ) -> list[dict]:
         compatible = [
             document
             for document in documents
             if document.index_key
-            and document.index_table
-            and document.embed_model == self._ollama.embed_model
+            and document.index_table == self.table_name
+            and document.embed_model == self.embed_model
             and document.embed_dimension > 0
         ]
-        if not compatible:
+        if not self.enabled or not compatible:
             return []
-        vector = await self._ollama.embed(query)
-        grouped: dict[str, list[LoreReference]] = {}
-        for document in compatible:
-            if document.embed_dimension == len(vector):
-                grouped.setdefault(document.index_table, []).append(document)
-        rows: list[dict[str, Any]] = []
-        async with self._lock:
-            for table_name, refs in grouped.items():
-                rows.extend(
-                    await asyncio.to_thread(
-                        self._search_table_sync,
-                        table_name,
-                        vector,
-                        [ref.index_key for ref in refs],
-                        max(limit, limit * 2),
-                    )
-                )
-        rows.sort(key=lambda row: float(row.get("_distance", float("inf"))))
-        return [
-            {
-                "document_id": row.get("document_id"),
-                "filename": row.get("filename"),
-                "chunk_index": row.get("chunk_index"),
-                "text": row.get("text"),
-                "score": row.get("_distance"),
-            }
-            for row in rows[:limit]
-        ]
+        vector = _unit(await self._models.embed(query))
+        keys = [row.index_key for row in compatible if row.embed_dimension == len(vector)]
+        try:
+            return await asyncio.to_thread(self._search, vector, keys, limit) if keys else []
+        except sqlite3.Error as exc:
+            raise LoreProcessingError("Local lore search is unavailable.") from exc

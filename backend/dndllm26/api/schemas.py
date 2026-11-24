@@ -7,9 +7,9 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dndllm26.game.catalog import ABILITIES, ANCESTRIES, CLASSES
+from dndllm26.llm.providers import model_id
 
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
-_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
 PositiveId = Annotated[int, Field(gt=0)]
 
 
@@ -19,13 +19,6 @@ def validate_idempotency_key(value: str) -> str:
         raise ValueError(
             "Idempotency-Key must contain 8-128 letters, digits, dots, underscores, colons, or hyphens."
         )
-    return cleaned
-
-
-def validate_model_name(value: str) -> str:
-    cleaned = value.strip()
-    if not _MODEL_RE.fullmatch(cleaned) or ".." in cleaned:
-        raise ValueError("Invalid Ollama model name.")
     return cleaned
 
 
@@ -335,12 +328,21 @@ class ModelRuntimeOut(BaseModel):
     embeddings: ModelRuntimeComponent
 
 
+class ProviderInfo(BaseModel):
+    name: str
+    label: str
+    remote: bool
+    embedding_label: str | None
+    embedding_remote: bool
+
+
 class HealthOut(BaseModel):
     status: Literal["ok", "degraded", "error"]
     database: HealthComponent
     filesystem: HealthComponent
     worker: WorkerHealthOut
-    ollama: HealthComponent
+    connection: HealthComponent
+    provider: ProviderInfo
     model_runtime: ModelRuntimeOut
     chat_model: str
     utility_model: str
@@ -363,7 +365,7 @@ class ModelSettingsUpdate(BaseModel):
     @field_validator("chat_model", "utility_model", "embed_model")
     @classmethod
     def valid_model(cls, value: str) -> str:
-        return validate_model_name(value)
+        return model_id(value) if value.strip() else ""
 
 
 class ModelSettingsOut(BaseModel):
@@ -371,7 +373,10 @@ class ModelSettingsOut(BaseModel):
     utility_model: str
     embed_model: str
     narration_style: Literal["focused", "balanced", "cinematic"]
+    provider: ProviderInfo
     models: list[ModelOptionOut]
+    embedding_models: list[ModelOptionOut]
+    discovery_error: str | None = None
     model_runtime: ModelRuntimeOut
     lore_document_count: int
     reindex_queued: int = 0
