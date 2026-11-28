@@ -12,7 +12,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {
-    "lucide-react": "^1.78.0",
+    "lucide-react": "^1.80.0",
     "react": "~19.2.9",
     "react-dom": "~19.2.9"
   },
